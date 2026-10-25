@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
@@ -7,10 +7,13 @@ from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
+from pymongo.asynchronous.database import AsyncDatabase
 
 from app.core.config import Settings
-from app.core.database import Document
+from app.core.database import Document, Mongo
 from app.main import create_app
+from app.repositories.indexes import ensure_indexes
+from app.schemas.file import FileDocument, FileStorage, ProcessingCapabilities
 
 # 실제 DB가 필요한 테스트는 이 환경 변수가 있을 때만 실행한다(운영 DB 주소는 넣지 않는다)
 TEST_URI = os.environ.get("MONGODB_TEST_URI")
@@ -76,3 +79,48 @@ def db_client(tmp_path: Path) -> Iterator[TestClient]:
         cleanup: MongoClient[Document]
         with MongoClient(TEST_URI) as cleanup:
             cleanup.drop_database(db_name)
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """비동기 테스트(pytest.mark.anyio)를 asyncio로 실행한다.
+
+    파라미터: 없음
+    """
+    return "asyncio"
+
+
+@pytest.fixture
+async def db() -> AsyncIterator[AsyncDatabase[Document]]:
+    """테스트용 임시 데이터베이스. 인덱스를 만든 뒤 넘겨주고, 끝나면 지운다.
+
+    파라미터: 없음
+    """
+    assert TEST_URI is not None
+    mongo = Mongo(TEST_URI, f"datalens_test_{ObjectId()}")
+    await ensure_indexes(mongo.db)
+    try:
+        yield mongo.db
+    finally:
+        await mongo.db.client.drop_database(mongo.db.name)
+        await mongo.close()
+
+
+def make_file_doc(name: str = "sales.csv") -> FileDocument:
+    """테스트용 files 문서를 만든다(CSV, queued).
+
+    파라미터:
+        name: 원래 파일명
+    """
+    return FileDocument(
+        original_name=name,
+        extension="csv",
+        mime_type="text/csv",
+        category="tabular",
+        size_bytes=10,
+        storage=FileStorage(provider="local", key=f"uploads/test/{name}"),
+        status="queued",
+        processing_capabilities=ProcessingCapabilities(
+            preview=True, quality_check=True, cleaning=True, statistics=True, ai_summary=True
+        ),
+    )

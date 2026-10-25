@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     max_zip_uncompressed_bytes: int = 1024 * 1024 * 1024
     max_zip_entries: int = 10_000
 
+    # 워커(python -m app.worker): 대기 작업이 없을 때 다시 확인하는 간격,
+    # 이 시간보다 오래 processing에 머문 작업은 워커가 멈춘 것으로 보고 실패 처리
+    worker_poll_seconds: float = 1.0
+    job_timeout_seconds: int = 60 * 60
+
 
 @lru_cache
 def get_settings() -> Settings:

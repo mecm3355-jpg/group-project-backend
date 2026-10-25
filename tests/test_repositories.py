@@ -3,74 +3,22 @@
 테스트마다 임시 데이터베이스를 만들고 끝나면 지운다. 운영 DB 연결 문자열은 쓰지 않는다.
 """
 
-import os
-from collections.abc import AsyncIterator
-
 import pytest
 from bson import ObjectId
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import DuplicateKeyError
 
-from app.core.database import Document, Mongo
+from app.core.database import Document
 from app.repositories.files import FileRepository
-from app.repositories.indexes import ensure_indexes
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
-from app.schemas.file import FileDocument, FileStorage, ProcessingCapabilities
 from app.schemas.job import JobDocument, JobError
 from app.schemas.result import ResultDocument
+from tests.conftest import make_file_doc, requires_db
 
-TEST_URI = os.environ.get("MONGODB_TEST_URI")
+pytestmark = [pytest.mark.anyio, requires_db]
 
-pytestmark = [
-    pytest.mark.anyio,
-    pytest.mark.skipif(not TEST_URI, reason="MONGODB_TEST_URI가 없어 DB 통합 테스트를 건너뜀"),
-]
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    """비동기 테스트를 asyncio로 실행한다.
-
-    파라미터: 없음
-    """
-    return "asyncio"
-
-
-@pytest.fixture
-async def db() -> AsyncIterator[AsyncDatabase[Document]]:
-    """테스트용 임시 데이터베이스. 인덱스를 만든 뒤 넘겨주고, 끝나면 지운다.
-
-    파라미터: 없음
-    """
-    assert TEST_URI is not None
-    mongo = Mongo(TEST_URI, f"datalens_test_{ObjectId()}")
-    await ensure_indexes(mongo.db)
-    try:
-        yield mongo.db
-    finally:
-        await mongo.db.client.drop_database(mongo.db.name)
-        await mongo.close()
-
-
-def _file(name: str = "sales.csv") -> FileDocument:
-    """테스트용 files 문서를 만든다.
-
-    파라미터:
-        name: 원래 파일명
-    """
-    return FileDocument(
-        original_name=name,
-        extension="csv",
-        mime_type="text/csv",
-        category="tabular",
-        size_bytes=10,
-        storage=FileStorage(provider="local", key=f"uploads/test/{name}"),
-        status="queued",
-        processing_capabilities=ProcessingCapabilities(
-            preview=True, quality_check=True, cleaning=True, statistics=True, ai_summary=True
-        ),
-    )
+_file = make_file_doc
 
 
 async def test_indexes_created(db: AsyncDatabase[Document]) -> None:

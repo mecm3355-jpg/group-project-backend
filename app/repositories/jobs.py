@@ -1,5 +1,8 @@
+from collections.abc import Collection
+from datetime import datetime
+
 from bson import ObjectId
-from pymongo import ASCENDING, DESCENDING, IndexModel
+from pymongo import ASCENDING, DESCENDING, IndexModel, ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.core.database import Document
@@ -35,6 +38,33 @@ class JobRepository(BaseRepository[JobDocument]):
         """
         return await self._find({"field": file_id}, [("createAt", DESCENDING)])
 
+    async def claim_next(self, types: Collection[str]) -> JobDocument | None:
+        """가장 오래된 queued 작업 하나를 processing으로 바꿔 가져간다. 없으면 None.
+
+        한 번의 원자적 갱신으로 가져가므로 워커가 여러 개여도 같은 작업을 두 번 실행하지 않는다.
+
+        파라미터:
+            types: 이 워커가 처리할 수 있는 작업 종류(type) 목록
+        """
+        raw = await self.collection.find_one_and_update(
+            {"status": "queued", "type": {"$in": list(types)}},
+            {"$set": {"status": "processing", "stage": "started", "startedAt": utc_now()}},
+            sort=[("createAt", ASCENDING)],
+            return_document=ReturnDocument.AFTER,
+        )
+        return None if raw is None else JobDocument.model_validate(raw)
+
+    async def list_stale(self, started_before: datetime) -> list[JobDocument]:
+        """started_before보다 먼저 시작해 아직 processing인 작업(멈춘 워커의 작업)을 찾는다.
+
+        파라미터:
+            started_before: 이 시각 이전에 시작한 작업만
+        """
+        return await self._find(
+            {"status": "processing", "startedAt": {"$lt": started_before}},
+            [("startedAt", ASCENDING)],
+        )
+
     async def _set(self, job_id: ObjectId, changes: dict[str, object]) -> bool:
         """작업 문서의 필드를 바꾼다. 문서가 있었으면 True.
 
@@ -69,32 +99,40 @@ class JobRepository(BaseRepository[JobDocument]):
         return await self._set(job_id, {"stage": stage, "progress": progress})
 
     async def mark_completed(self, job_id: ObjectId) -> bool:
-        """작업을 완료 상태(진행률 100)로 바꾸고 완료 시간을 기록한다.
+        """처리 중인 작업을 완료 상태(진행률 100)로 바꾸고 완료 시간을 기록한다.
+
+        이미 실패 처리된 작업(예: 시간 초과)은 바꾸지 않는다. 바꿨으면 True.
 
         파라미터:
             job_id: 작업 _id
         """
-        return await self._set(
-            job_id,
+        result = await self.collection.update_one(
+            {"_id": job_id, "status": "processing"},
             {
-                "status": "completed",
-                "stage": "completed",
-                "progress": 100,
-                "completedAt": utc_now(),
+                "$set": {
+                    "status": "completed",
+                    "stage": "completed",
+                    "progress": 100,
+                    "completedAt": utc_now(),
+                }
             },
         )
+        return result.modified_count == 1
 
     async def mark_failed(self, job_id: ObjectId, error: JobError) -> bool:
-        """작업을 실패 상태로 바꾼다. 실패한 단계(stage)는 그대로 남긴다.
+        """처리 중인 작업을 실패 상태로 바꾼다. 실패한 단계(stage)는 그대로 남긴다.
+
+        이미 끝난(completed·failed) 작업은 바꾸지 않는다. 바꿨으면 True.
 
         파라미터:
             job_id: 작업 _id
             error: 오류 코드와 메시지
         """
-        return await self._set(
-            job_id,
-            {"status": "failed", "error": error.to_document(), "completedAt": utc_now()},
+        result = await self.collection.update_one(
+            {"_id": job_id, "status": {"$in": ["queued", "processing"]}},
+            {"$set": {"status": "failed", "error": error.to_document(), "completedAt": utc_now()}},
         )
+        return result.modified_count == 1
 
     async def delete_by_file(self, file_id: ObjectId) -> int:
         """한 파일의 작업을 모두 지우고 지운 개수를 돌려준다.

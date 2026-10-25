@@ -8,7 +8,8 @@ Python + FastAPI(Modular Monolith) + MongoDB Atlas
 ## 명령어
 가상환경은 Google Drive 동기화를 피하려고 프로젝트 밖에 둔다(예: `~/.venvs/datalens`).
 - 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"`
-- 실행: `uvicorn app.main:create_app --factory --reload`
+- 실행(API): `uvicorn app.main:create_app --factory --reload`
+- 실행(워커): `python -m app.worker` (API와 별도 프로세스)
 - lint: `ruff check . && ruff format --check .`
 - typecheck: `mypy app tests`
 - test: `pytest`

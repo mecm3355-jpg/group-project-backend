@@ -1,15 +1,7 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
-from pydantic.alias_generators import to_camel
-
+from app.schemas.common import ApiModel
 from app.schemas.file import FileCategory, FileDocument, FileStatus, ProcessingCapabilities
-
-
-class ApiModel(BaseModel):
-    """API 응답 본문의 기반. JSON 필드는 camelCase로 내보낸다(명세서 예시 형식)."""
-
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class FileUploadResult(ApiModel):

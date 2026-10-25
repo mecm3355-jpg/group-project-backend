@@ -8,6 +8,7 @@ from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
 from app.services.file_service import FileService
+from app.services.job_service import JobService
 from app.services.storage import LocalStorage
 
 
@@ -39,3 +40,12 @@ def get_file_service(
         LocalStorage(settings.storage_root),
         settings,
     )
+
+
+def get_job_service(mongo: Annotated[Mongo, Depends(get_mongo)]) -> JobService:
+    """요청마다 작업 서비스를 만든다.
+
+    파라미터:
+        mongo: Mongo 인스턴스
+    """
+    return JobService(JobRepository(mongo.db))
