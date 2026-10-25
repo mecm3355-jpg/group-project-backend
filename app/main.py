@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health
+from app.api import files, health
 from app.api.error_handlers import register_error_handlers
 from app.core.config import Settings, get_settings
 from app.core.database import Mongo, set_mongo
@@ -35,6 +35,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await mongo.close()
 
     app = FastAPI(title=resolved.app_name, lifespan=lifespan)
+    app.state.settings = resolved
     register_error_handlers(app)
     app.include_router(health.router)
+    app.include_router(files.router, prefix="/api/v1")
     return app

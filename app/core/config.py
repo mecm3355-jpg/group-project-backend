@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,13 @@ class Settings(BaseSettings):
     app_name: str = "DataLens"
     mongodb_uri: str
     mongodb_db_name: str = "datalens"
+
+    # 원본 파일·산출물 로컬 저장소 루트(files.storage.provider = local)
+    storage_root: Path = Path("storage")
+    # 업로드 제한(PRD 10장). 압축 기반 형식(XLSX·DOCX)은 풀었을 때 크기·파일 수도 제한
+    max_upload_bytes: int = 100 * 1024 * 1024
+    max_zip_uncompressed_bytes: int = 1024 * 1024 * 1024
+    max_zip_entries: int = 10_000
 
 
 @lru_cache
