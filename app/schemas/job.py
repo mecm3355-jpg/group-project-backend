@@ -10,6 +10,8 @@ JobStatus = Literal["queued", "processing", "completed", "failed"]
 
 # 데이터 추출·품질 진단 작업. 업로드할 때와 POST /files/{file_id}/process 때 만든다(PRD 7.2)
 ANALYZE_JOB_TYPE = "analyze"
+# 승인한 정제 규칙 적용 작업. POST /files/{file_id}/clean 때 만든다
+CLEAN_JOB_TYPE = "clean"
 
 
 class JobError(MongoModel):

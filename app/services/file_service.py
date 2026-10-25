@@ -16,6 +16,7 @@ from app.schemas.job import ANALYZE_JOB_TYPE, JobDocument
 from app.schemas.mongo import utc_now
 from app.schemas.preview_api import FilePreview
 from app.schemas.result import ResultDocument
+from app.services.artifacts import job_dir_key, results_dir_key
 from app.services.file_validation import CAPABILITIES, ZipLimits, detect_format
 from app.services.preview import build_preview
 from app.services.storage import LocalStorage
@@ -185,16 +186,20 @@ class FileService:
         return doc
 
     async def delete(self, file_id: str) -> None:
-        """파일과 관련 작업·결과·원본 파일을 지운다. 없으면 404.
+        """파일과 관련 작업·결과, 원본·산출물·작업 파라미터 파일을 지운다. 없으면 404.
 
         파라미터:
             file_id: 파일 ID 문자열
         """
         doc = await self.get(file_id)
+        jobs = await self._jobs.list_by_file(doc.id)
         await self._results.delete_by_file(doc.id)
         await self._jobs.delete_by_file(doc.id)
         await self._files.delete(doc.id)
         await asyncio.to_thread(self._storage.delete, doc.storage.key)
+        await asyncio.to_thread(self._storage.delete_prefix, results_dir_key(doc.id))
+        for job in jobs:
+            await asyncio.to_thread(self._storage.delete_prefix, job_dir_key(job.id))
 
     async def preview(self, file_id: str) -> FilePreview:
         """원본 파일의 앞부분(표 20행 또는 텍스트 20줄)을 돌려준다.

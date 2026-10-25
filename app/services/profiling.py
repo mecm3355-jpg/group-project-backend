@@ -122,6 +122,7 @@ class ColumnStats:
 
     name: str
     missing: int = 0
+    whitespace: int = 0
     uniques: set[str] = field(default_factory=set)
     type_counts: dict[str, int] = field(default_factory=dict)
     numbers: list[float] = field(default_factory=list)
@@ -136,6 +137,8 @@ class ColumnStats:
         if is_missing(value):
             self.missing += 1
             return
+        if isinstance(value, str) and value != value.strip():
+            self.whitespace += 1
         self.uniques.add(cell_key(value))
         kind, parsed = classify(value)
         self.type_counts[kind] = self.type_counts.get(kind, 0) + 1
@@ -235,6 +238,19 @@ def profile_table(table: Table) -> Profile:
                     count=column.missing,
                     location=column.name,
                     message=f"{column.name} 필드에 결측치가 있습니다.",
+                )
+            )
+        if column.whitespace:
+            issues.append(
+                QualityIssue(
+                    type="whitespace",
+                    severity="low",
+                    count=column.whitespace,
+                    location=column.name,
+                    message=(
+                        f"{column.name} 필드에 앞뒤 공백이 있는 값 "
+                        f"{column.whitespace}개가 있습니다."
+                    ),
                 )
             )
         if mismatched := column.mismatched():

@@ -1,3 +1,4 @@
+import shutil
 import uuid
 from pathlib import Path
 
@@ -51,6 +52,39 @@ class LocalStorage:
         target = self.path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         source.replace(target)
+
+    def write_text(self, key: str, text: str) -> None:
+        """작은 텍스트(작업 파라미터 등)를 key 위치에 UTF-8로 쓴다.
+
+        파라미터:
+            key: 저장할 위치
+            text: 쓸 내용
+        """
+        target = self.path(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    def read_text(self, key: str) -> str:
+        """key 위치의 텍스트를 읽는다. 없으면 AppError(STORAGE_NOT_FOUND).
+
+        파라미터:
+            key: 읽을 위치
+        """
+        target = self.path(key)
+        if not target.is_file():
+            raise AppError("STORAGE_NOT_FOUND", "저장된 파일을 찾을 수 없습니다.", 404)
+        return target.read_text(encoding="utf-8")
+
+    def delete_prefix(self, prefix: str) -> None:
+        """prefix 폴더를 통째로 지운다(파일별 산출물·작업 파라미터 정리용). 없으면 그냥 둔다.
+
+        파라미터:
+            prefix: 지울 폴더 key(예: results/<fileId>)
+        """
+        target = self.path(prefix)
+        if target == self._root:
+            raise AppError("INVALID_STORAGE_KEY", "저장소 전체는 지울 수 없습니다.", 400)
+        shutil.rmtree(target, ignore_errors=True)
 
     def delete(self, key: str) -> bool:
         """key 위치의 파일을 지운다. 지웠으면 True, 없었으면 False.
