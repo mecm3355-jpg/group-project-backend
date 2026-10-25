@@ -7,6 +7,7 @@ from app.api import health
 from app.api.error_handlers import register_error_handlers
 from app.core.config import Settings, get_settings
 from app.core.database import Mongo, set_mongo
+from app.repositories.indexes import ensure_indexes
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -19,7 +20,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """앱 시작 시 DB 클라이언트를 만들고 종료 시 닫는다.
+        """앱 시작 시 DB 클라이언트를 만들고 인덱스를 확인하며, 종료 시 닫는다.
 
         파라미터:
             app: 수명 주기를 관리할 FastAPI 앱
@@ -27,6 +28,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mongo = Mongo(resolved.mongodb_uri, resolved.mongodb_db_name)
         set_mongo(mongo)
         try:
+            await ensure_indexes(mongo.db)
             yield
         finally:
             set_mongo(None)
