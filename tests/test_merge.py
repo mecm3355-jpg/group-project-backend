@@ -172,6 +172,7 @@ def test_merge_distributions_are_saved(db_client: TestClient) -> None:
                     "receivedAt": "접수일시",
                     "region": "행정동",
                 },
+                "notes": ["좌표 열은 값 범위로 바꿔 매핑"],
             },
             {
                 "fileId": asan,
@@ -196,6 +197,12 @@ def test_merge_distributions_are_saved(db_client: TestClient) -> None:
     analysis = result["analysis"]
     assert analysis["merged"] is True
     assert [s["rows"] for s in analysis["sources"]] == [2, 3]
+    assert analysis["sources"][0]["notes"] == ["좌표 열은 값 범위로 바꿔 매핑"]
+    # 아산은 본문 열이 없으므로 본문 빈칸 3개는 결측이 아니라 해당 없음
+    body = next(c for c in analysis["columns"] if c["name"] == "본문")
+    assert (body["missingCount"], body["notApplicableCount"]) == (0, 3)
+    issues = result["quality"]["issues"]
+    assert not any(i["type"] == "missing_values" and i["location"] == "본문" for i in issues)
     dist = analysis["distributions"]
     assert dist["월별"] == {"2023-05": 1, "2023-06": 1, "2024-07": 2, "2024-08": 1}
     regions = {e["value"]: e["count"] for e in dist["지역"]["top"]}

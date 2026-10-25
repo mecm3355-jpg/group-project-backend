@@ -42,6 +42,7 @@ class ResolvedSource:
     extension: str
     mapping: dict[CanonicalField, str]  # 공통 필드 → 원본 열
     constants: dict[str, str]  # 공통 필드 → 고정값
+    notes: list[str]  # 매핑 메모
 
 
 @dataclass
@@ -181,7 +182,13 @@ async def merge(ctx: JobContext) -> None:
             }
             sources.append(
                 ResolvedSource(
-                    doc.id, doc.original_name, path, doc.extension, item.mapping.mapped(), constants
+                    doc.id,
+                    doc.original_name,
+                    path,
+                    doc.extension,
+                    item.mapping.mapped(),
+                    constants,
+                    list(item.notes),
                 )
             )
 
@@ -203,6 +210,7 @@ async def merge(ctx: JobContext) -> None:
                 "rows": outcome.source_rows.get(str(s.file_id), 0),
                 "mapping": {str(k): v for k, v in s.mapping.items()},
                 "constants": dict(s.constants),
+                "notes": list[JsonValue](s.notes),
             }
             for s in sources
         ]

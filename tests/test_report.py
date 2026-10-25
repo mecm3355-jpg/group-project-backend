@@ -21,7 +21,7 @@ from app.schemas.result import QualityIssue, QualityResult, ResultDocument
 from app.services.job_handlers import HANDLERS
 from app.services.job_runner import JobRunner
 from app.services.llm import LlmClient
-from app.services.report_handler import build_report_input, make_report_handler
+from app.services.report_handler import PROMPT_VERSION, build_report_input, make_report_handler
 from tests.conftest import TEST_URI, make_settings, requires_db
 from tests.test_analyze_flow import CSV, run_worker, upload
 from tests.test_llm import FakeBackend
@@ -214,7 +214,7 @@ def test_report_flow(llm_client: TestClient) -> None:
     assert ai["report"]["summary"].startswith("인적 정보 표")
     assert ai["report"]["cleaningRecommendations"][0]["priority"] == "high"
     assert ai["basedOn"] == {"analysisVersion": 1, "cleaningVersion": None}
-    assert ai["promptVersion"] == "file-report@1"
+    assert ai["promptVersion"] == PROMPT_VERSION
     assert ai["usage"]["calls"] == 1
     assert ai["usage"]["deployment"] == "fake-deployment"
 

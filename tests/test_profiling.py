@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from datetime import datetime
 
 import pytest
+from pydantic import JsonValue
 
 from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
@@ -19,6 +20,21 @@ def make_table(columns: list[str], rows: list[list[Cell]], ragged: int = 0) -> T
     table = Table("csv", "utf-8", None, columns, iter(rows))
     table.ragged_row_count = ragged
     return table
+
+
+def column_info(analysis: dict[str, JsonValue]) -> dict[str, dict[str, JsonValue]]:
+    """분석 결과의 열 정보를 열 이름 → 정보 dict로 꺼낸다.
+
+    파라미터:
+        analysis: profile.analysis
+    """
+    columns = analysis["columns"]
+    assert isinstance(columns, list)
+    result: dict[str, dict[str, JsonValue]] = {}
+    for column in columns:
+        assert isinstance(column, dict)
+        result[str(column["name"])] = column
+    return result
 
 
 def lines(items: list[str]) -> Iterator[str]:
@@ -154,3 +170,34 @@ def test_profile_txt_has_no_keyword_counts() -> None:
 
     assert "keywordCounts" not in profile.analysis
     assert profile.quality.issues == []
+
+
+def test_merged_table_excludes_structural_missing_and_source_columns() -> None:
+    columns = ["출처파일ID", "원본행", "본문", "지역"]
+    rows: list[list[Cell]] = [
+        # 출처 A는 본문·지역 제공, 지역 하나는 진짜 결측
+        ["A", 2, "가로등 고장", "양덕동"],
+        ["A", 3, "도로 파손", ""],
+        # 출처 B는 본문 열이 없음(전부 빈칸) → 결측이 아니라 해당 없음
+        ["B", 2, "", "아산시"],
+        ["B", 3, "", "아산시"],
+        ["B", 4, "", "아산시"],  # 출처 정보만 다른 중복 행
+    ]
+
+    profile = profile_table(make_table(columns, rows))
+
+    info = column_info(profile.analysis)
+    assert (info["본문"]["missingCount"], info["본문"]["notApplicableCount"]) == (0, 3)
+    assert (info["지역"]["missingCount"], info["지역"]["notApplicableCount"]) == (1, 0)
+    missing = [i for i in profile.quality.issues if i.type == "missing_values"]
+    assert [(i.location, i.count) for i in missing] == [("지역", 1)]
+    duplicates = next(i for i in profile.quality.issues if i.type == "duplicates")
+    assert duplicates.count == 2
+    # 점수: 해당 칸 17개 중 16개 채움 × (1 − 중복 2/5)
+    assert profile.quality.score == int(100 * 16 / 17 * (1 - 2 / 5))
+
+
+def test_plain_table_has_no_not_applicable_count() -> None:
+    profile = profile_table(make_table(["a"], [["1"]]))
+
+    assert "notApplicableCount" not in column_info(profile.analysis)["a"]

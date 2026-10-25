@@ -13,6 +13,7 @@ from pydantic import JsonValue
 
 from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
+from app.schemas.dataset import SOURCE_COLUMNS
 from app.schemas.result import QualityIssue, QualityResult, Severity
 
 NUMBER_PATTERN = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$|^[+-]?\.\d+$")
@@ -122,6 +123,8 @@ class ColumnStats:
 
     name: str
     missing: int = 0
+    # 통합 파일에서 그 열을 제공하지 않는 출처의 빈칸(결측이 아니라 해당 없음)
+    not_applicable: int = 0
     whitespace: int = 0
     uniques: set[str] = field(default_factory=set)
     type_counts: dict[str, int] = field(default_factory=dict)
@@ -202,11 +205,25 @@ class Profile:
     analysis: dict[str, JsonValue]
 
 
+def is_merged(columns: list[str]) -> bool:
+    """통합 데이터셋 파일(첫 열이 출처파일ID·원본행)인지 본다.
+
+    파라미터:
+        columns: 표의 열 이름
+    """
+    return tuple(columns[: len(SOURCE_COLUMNS)]) == SOURCE_COLUMNS
+
+
 def profile_table(table: Table) -> Profile:
     """표 전체를 한 번 돌며 품질 문제와 열별 분석·통계를 계산한다.
 
     품질 점수 = 100 × 채워진 칸 비율 × (1 − 중복 행 비율) × (1 − 길이 다른 행 비율)의 버림 (잠정).
     버림이라 문제가 하나라도 있으면 100점이 되지 않는다.
+
+    통합 데이터셋 파일이면:
+    - 어떤 출처에서 값이 하나도 없는 열은 그 출처에는 "해당 없음"으로 보고 결측·점수에서 뺀다
+      (예: 본문 열이 없는 아산 자료의 본문 칸). 열 정보에 notApplicableCount로 남긴다.
+    - 중복 행은 출처파일ID·원본행을 빼고 비교한다.
 
     파라미터:
         table: open_table로 연 표(rows를 이 함수가 끝까지 읽는다)
@@ -214,27 +231,48 @@ def profile_table(table: Table) -> Profile:
     stats = [ColumnStats(name) for name in table.columns]
     seen_rows: set[tuple[str, ...]] = set()
     row_count = duplicates = empty_rows = 0
+    merged = is_merged(table.columns)
+    compare_from = len(SOURCE_COLUMNS) if merged else 0
+    # 통합 파일: 출처별·열별 (결측 수, 값 있는 수)
+    group_missing: dict[str, list[int]] = {}
+    group_filled: dict[str, list[int]] = {}
 
     for row in table.rows:
         if not row or all(is_missing(v) for v in row):
             empty_rows += 1
             continue
         row_count += 1
-        key = tuple(cell_key(v) for v in row)
+        key = tuple(cell_key(v) for v in row[compare_from:])
         if key in seen_rows:
             duplicates += 1
         else:
             seen_rows.add(key)
+        if merged:
+            group = cell_key(row[0])
+            missing_counts = group_missing.setdefault(group, [0] * len(stats))
+            filled_counts = group_filled.setdefault(group, [0] * len(stats))
+            for index, value in enumerate(row):
+                if is_missing(value):
+                    missing_counts[index] += 1
+                else:
+                    filled_counts[index] += 1
         for column, value in zip(stats, row, strict=True):
             column.add(value)
 
+    for group, missing_counts in group_missing.items():
+        for index, column in enumerate(stats):
+            if group_filled[group][index] == 0:
+                column.not_applicable += missing_counts[index]
+                column.missing -= missing_counts[index]
+
     issues: list[QualityIssue] = []
     for column in stats:
-        if column.missing and row_count:
+        applicable = row_count - column.not_applicable
+        if column.missing and applicable:
             issues.append(
                 QualityIssue(
                     type="missing_values",
-                    severity=_ratio_severity(column.missing / row_count, 0.3, 0.05),
+                    severity=_ratio_severity(column.missing / applicable, 0.3, 0.05),
                     count=column.missing,
                     location=column.name,
                     message=f"{column.name} 필드에 결측치가 있습니다.",
@@ -318,7 +356,7 @@ def profile_table(table: Table) -> Profile:
             )
         )
 
-    cells = row_count * len(stats)
+    cells = sum(row_count - c.not_applicable for c in stats)
     filled = cells - sum(c.missing for c in stats)
     total_rows = row_count + empty_rows
     score = 100.0
@@ -331,14 +369,15 @@ def profile_table(table: Table) -> Profile:
     statistics: dict[str, JsonValue] = {}
     for column in stats:
         kind = column.inferred_type()
-        columns.append(
-            {
-                "name": column.name,
-                "inferredType": kind,
-                "missingCount": column.missing,
-                "uniqueCount": len(column.uniques),
-            }
-        )
+        info: dict[str, JsonValue] = {
+            "name": column.name,
+            "inferredType": kind,
+            "missingCount": column.missing,
+            "uniqueCount": len(column.uniques),
+        }
+        if merged:
+            info["notApplicableCount"] = column.not_applicable
+        columns.append(info)
         if kind == "number" and column.numbers:
             statistics[column.name] = {
                 "min": _round(min(column.numbers)),

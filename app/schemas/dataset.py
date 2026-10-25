@@ -86,6 +86,8 @@ class MergeSource(ApiModel):
     file_id: str
     mapping: FieldMapping
     constants: FieldConstants = Field(default_factory=FieldConstants)
+    # 매핑 제안 메모(예: 좌표 열을 바꿔 매핑한 이유). 출처 이력에 남겨 리포트가 참고한다
+    notes: list[str] = Field(default_factory=list, max_length=20)
 
 
 class MergeRequest(ApiModel):

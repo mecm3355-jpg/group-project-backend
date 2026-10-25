@@ -12,7 +12,9 @@ from app.schemas.cleaning import (
     RemoveDuplicatesRule,
     TrimWhitespaceRule,
 )
+from app.schemas.dataset import SOURCE_COLUMNS
 from app.schemas.result import ResultDocument
+from app.services.profiling import is_merged
 
 # 값 종류가 이 수 이하인 문자열 열만 최빈값 채우기를 추천한다(자유 서술 열 제외)
 MODE_MAX_UNIQUE = 50
@@ -71,12 +73,24 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                 )
             )
         elif issue.type == "duplicates":
-            suggestions.append(
-                Suggestion(
-                    RemoveDuplicatesRule(type="remove_duplicates"),
-                    f"모든 열이 같은 중복 행이 {issue.count}개 있습니다.",
+            names = list(columns)
+            if is_merged(names):
+                # 통합 파일은 출처파일ID·원본행이 행마다 달라 그 둘을 빼고 비교한다
+                suggestions.append(
+                    Suggestion(
+                        RemoveDuplicatesRule(
+                            type="remove_duplicates", columns=names[len(SOURCE_COLUMNS) :]
+                        ),
+                        f"출처 정보를 뺀 모든 열이 같은 중복 행이 {issue.count}개 있습니다.",
+                    )
                 )
-            )
+            else:
+                suggestions.append(
+                    Suggestion(
+                        RemoveDuplicatesRule(type="remove_duplicates"),
+                        f"모든 열이 같은 중복 행이 {issue.count}개 있습니다.",
+                    )
+                )
         elif issue.type == "missing_values" and column in columns:
             kind, unique = columns[column]
             if kind == "number":

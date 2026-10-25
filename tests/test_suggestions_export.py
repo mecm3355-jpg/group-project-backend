@@ -44,6 +44,15 @@ def test_suggest_rules_from_quality_issues() -> None:
     assert all(reason for _, reason in suggested)
 
 
+def test_merged_file_dedupe_ignores_source_columns() -> None:
+    rows: list[list[Cell]] = [["A", 2, "가로등"], ["B", 5, "가로등"]]
+    result = analysis_result(["출처파일ID", "원본행", "본문"], rows)
+
+    rules = [s.rule.model_dump() for s in suggest_rules(result)]
+
+    assert {"type": "remove_duplicates", "columns": ["본문"]} in rules
+
+
 def test_no_mode_for_free_text_column() -> None:
     rows: list[list[Cell]] = [[f"서로 다른 민원 내용 {i}"] for i in range(60)]
     rows.append([""])

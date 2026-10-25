@@ -20,7 +20,7 @@ from app.services.job_runner import JobContext, JobHandler
 from app.services.llm import LlmClient, create_llm_client
 from app.services.masking import mask_text
 
-PROMPT_VERSION = "file-report@1"
+PROMPT_VERSION = "file-report@2"
 
 SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이터 분석가다.
 입력은 한 파일의 품질 진단 결과 요약(JSON)이다. 원본 데이터는 포함되어 있지 않다.
@@ -35,6 +35,13 @@ SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이�
   안 되는 열은 채우기 대신 원본 확인이나 제외를 권한다.
 - analysisSuggestions: 이 데이터로 할 만한 분석과 그때의 주의점.
 - caveats: 이 리포트의 한계(예: 통계 요약만 보고 판단함).
+
+입력의 analysis.merged가 true이면 여러 기관 자료를 공통 열로 합친 통합 데이터셋이다.
+- analysis.sources에 출처별 행 수, 매핑(공통 필드 → 원본 열), 고정값, 매핑 메모(notes)가 있다.
+  매핑이 이상해 보여도 notes에 이유가 있으면 그 이유를 따른다(예: 값 범위로 좌표 열을 바꿔 매핑).
+- columns의 notApplicableCount는 그 열을 제공하지 않는 출처의 빈칸 수다. 결측이 아니므로
+  결측 문제로 다루지 말고, 출처 간 열 구성 차이로 설명한다. missingCount만 실제 결측이다.
+- analysis.distributions의 출처·지역·기존분류·처리기관·월별 분포로 출처 간 비교를 하라.
 """
 
 LlmFactory = Callable[[Settings], LlmClient]
