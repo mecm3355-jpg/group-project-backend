@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,16 @@ class Settings(BaseSettings):
     # 이 시간보다 오래 processing에 머문 작업은 워커가 멈춘 것으로 보고 실패 처리
     worker_poll_seconds: float = 1.0
     job_timeout_seconds: int = 60 * 60
+
+    # Azure OpenAI(PRD 6.1). 값은 .env에만 둔다.
+    # 엔드포인트가 .../openai/v1 이면 v1 API(API 버전 불필요), 아니면 API 버전이 필요하다.
+    # 배포 이름(모델명 아님): FAST는 대량·정형 작업(속성 추출 등), DEEP은 깊은 추론(리포트 등)
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_key: SecretStr | None = None
+    azure_openai_api_version: str | None = None
+    azure_openai_deployment_fast: str | None = None
+    azure_openai_deployment_deep: str | None = None
+    llm_timeout_seconds: float = 120.0
 
 
 @lru_cache

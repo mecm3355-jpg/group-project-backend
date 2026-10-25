@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,7 +15,7 @@ CSV = "이름,나이\n홍길동,30\n".encode()
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
-def upload(client: TestClient, name: str, content: bytes) -> httpx.Response:
+def upload(client: TestClient, name: str, content: bytes) -> httpx2.Response:
     """파일 하나를 multipart/form-data(필드명 file)로 업로드한다.
 
     파라미터:
@@ -23,7 +23,7 @@ def upload(client: TestClient, name: str, content: bytes) -> httpx.Response:
         name: 파일명
         content: 파일 내용
     """
-    res: httpx.Response = client.post("/api/v1/files", files={"file": (name, content)})
+    res: httpx2.Response = client.post("/api/v1/files", files={"file": (name, content)})
     return res
 
 
@@ -114,7 +114,7 @@ def test_invalid_file_id_is_not_found(offline_client: TestClient, file_id: str) 
 
 
 @pytest.mark.parametrize("params", [{"size": 1000}, {"page": 0}, {"status": "unknown"}])
-def test_list_rejects_bad_query(offline_client: TestClient, params: dict[str, object]) -> None:
+def test_list_rejects_bad_query(offline_client: TestClient, params: dict[str, str | int]) -> None:
     res = offline_client.get("/api/v1/files", params=params)
 
     assert res.status_code == 422

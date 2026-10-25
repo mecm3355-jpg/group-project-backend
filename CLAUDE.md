@@ -10,9 +10,10 @@ Python + FastAPI(Modular Monolith) + MongoDB Atlas
 - 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"`
 - 실행(API): `uvicorn app.main:create_app --factory --reload`
 - 실행(워커): `python -m app.worker` (API와 별도 프로세스)
+- 실행(DB 없이 로컬): `python scripts/dev_server.py` — 임시 MongoDB + API + 워커, 종료하면 데이터 삭제
 - lint: `ruff check . && ruff format --check .`
 - typecheck: `mypy app tests`
-- test: `pytest`
+- test: `pytest` (DB 통합 테스트는 임시 MongoDB를 자동으로 띄움 — `MONGODB_TEST_URI`로 다른 DB 지정, `=skip`이면 건너뜀. 실제 LLM 호출 테스트는 `RUN_LLM_TESTS=1`일 때만)
 
 
 ## 구조

@@ -1,4 +1,4 @@
-"""워커(JobRunner) 통합 테스트. MONGODB_TEST_URI가 있을 때만 실행한다."""
+"""워커(JobRunner) 통합 테스트. 실제 MongoDB가 필요하다(conftest가 임시 DB를 띄운다)."""
 
 import asyncio
 from datetime import timedelta

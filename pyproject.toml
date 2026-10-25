@@ -15,17 +15,21 @@ dependencies = [
     "python-multipart>=0.0.9",
     "openpyxl>=3.1",
     "xlrd>=2.0",
+    "openai>=1.99",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.27",
+    # Starlette TestClient용(openai도 httpx2를 쓴다)
+    "httpx2>=2.0",
     "ruff>=0.6",
     "mypy>=1.11",
     "types-openpyxl",
     # 테스트에서 XLS(구형 엑셀) 파일을 만들 때만 쓴다
     "xlwt>=1.3",
+    # DB 없이 로컬 실행·통합 테스트용 임시 MongoDB(scripts/dev_server.py)
+    "pymongo-inmemory>=0.5",
 ]
 
 [tool.setuptools.packages.find]
@@ -46,7 +50,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # xlrd·xlwt는 타입 정보를 제공하지 않는다
-module = ["xlrd", "xlrd.*", "xlwt"]
+module = ["xlrd", "xlrd.*", "xlwt", "pymongo_inmemory"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

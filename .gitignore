@@ -18,6 +18,7 @@ htmlcov/
 
 # 업로드 원본·산출물 (로컬 저장소)
 storage/
+storage-dev/
 
 # 에디터·OS
 .vscode/

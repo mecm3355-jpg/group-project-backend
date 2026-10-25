@@ -1,3 +1,4 @@
+import atexit
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -15,10 +16,33 @@ from app.main import create_app
 from app.repositories.indexes import ensure_indexes
 from app.schemas.file import FileDocument, FileStorage, ProcessingCapabilities
 
-# 실제 DB가 필요한 테스트는 이 환경 변수가 있을 때만 실행한다(운영 DB 주소는 넣지 않는다)
-TEST_URI = os.environ.get("MONGODB_TEST_URI")
+
+def _test_mongo_uri() -> str | None:
+    """DB 통합 테스트에 쓸 MongoDB 주소를 정한다.
+
+    MONGODB_TEST_URI가 있으면 그것을 쓰고(운영 DB 주소는 넣지 않는다), 없으면 이 PC에
+    임시 MongoDB(pymongo-inmemory)를 띄운다. MONGODB_TEST_URI=skip 이면 DB 테스트를 건너뛴다.
+
+    파라미터: 없음
+    """
+    configured = os.environ.get("MONGODB_TEST_URI")
+    if configured == "skip":
+        return None
+    if configured:
+        return configured
+    try:
+        from pymongo_inmemory import MongoClient as InMemoryMongo
+    except ImportError:
+        return None
+    server = InMemoryMongo()
+    atexit.register(server.close)
+    uri: str = server._mongod.connection_string
+    return uri
+
+
+TEST_URI = _test_mongo_uri()
 requires_db = pytest.mark.skipif(
-    not TEST_URI, reason="MONGODB_TEST_URI가 없어 DB 통합 테스트를 건너뜀"
+    not TEST_URI, reason="테스트용 MongoDB가 없어 DB 통합 테스트를 건너뜀"
 )
 
 
