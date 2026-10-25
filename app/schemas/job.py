@@ -8,6 +8,9 @@ from app.schemas.mongo import MongoDocument, MongoModel, utc_now
 
 JobStatus = Literal["queued", "processing", "completed", "failed"]
 
+# 데이터 추출·품질 진단 작업. 업로드할 때와 POST /files/{file_id}/process 때 만든다(PRD 7.2)
+ANALYZE_JOB_TYPE = "analyze"
+
 
 class JobError(MongoModel):
     """processing_jobs.error — 오류 코드와 메시지."""

@@ -7,6 +7,8 @@ from app.api.deps import get_file_service
 from app.schemas.common import ApiResponse, ok
 from app.schemas.file import FileStatus
 from app.schemas.file_api import FileDeleteResult, FileDetail, FileList, FileUploadResult
+from app.schemas.preview_api import FilePreview
+from app.schemas.process_api import ProcessStartResult, QualityReport
 from app.services.file_service import FileService
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -86,3 +88,48 @@ async def delete_file(service: Service, file_id: str) -> ApiResponse[FileDeleteR
     """
     await service.delete(file_id)
     return ok(FileDeleteResult(file_id=file_id, message="파일이 삭제되었습니다."))
+
+
+@router.get("/{file_id}/preview", response_model=ApiResponse[FilePreview])
+async def preview_file(service: Service, file_id: str) -> ApiResponse[FilePreview]:
+    """원본 데이터 앞부분(표 20행 또는 텍스트 20줄)을 미리 본다.
+
+    파라미터:
+        service: 파일 서비스
+        file_id: 파일 ID
+    """
+    return ok(await service.preview(file_id))
+
+
+@router.post(
+    "/{file_id}/process",
+    response_model=ApiResponse[ProcessStartResult],
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def process_file(service: Service, file_id: str) -> ApiResponse[ProcessStartResult]:
+    """데이터 추출·진단 작업을 시작한다(재처리). 진행 상황은 GET /api/v1/jobs/{job_id}로 본다.
+
+    파라미터:
+        service: 파일 서비스
+        file_id: 파일 ID
+    """
+    job = await service.start_processing(file_id)
+    return ok(
+        ProcessStartResult(
+            job_id=str(job.id),
+            file_id=file_id,
+            status=job.status,
+            message="추출·진단 작업이 등록되었습니다.",
+        )
+    )
+
+
+@router.get("/{file_id}/quality", response_model=ApiResponse[QualityReport])
+async def get_quality(service: Service, file_id: str) -> ApiResponse[QualityReport]:
+    """가장 최근 분석의 데이터 품질 진단 결과를 조회한다.
+
+    파라미터:
+        service: 파일 서비스
+        file_id: 파일 ID
+    """
+    return ok(QualityReport.from_document(await service.latest_analysis(file_id)))

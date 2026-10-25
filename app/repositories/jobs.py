@@ -54,6 +54,17 @@ class JobRepository(BaseRepository[JobDocument]):
         )
         return None if raw is None else JobDocument.model_validate(raw)
 
+    async def has_active(self, file_id: ObjectId) -> bool:
+        """한 파일에 아직 끝나지 않은(queued·processing) 작업이 있는지 본다.
+
+        파라미터:
+            file_id: 대상 파일 _id
+        """
+        found = await self.collection.find_one(
+            {"field": file_id, "status": {"$in": ["queued", "processing"]}}, {"_id": 1}
+        )
+        return found is not None
+
     async def list_stale(self, started_before: datetime) -> list[JobDocument]:
         """started_before보다 먼저 시작해 아직 processing인 작업(멈춘 워커의 작업)을 찾는다.
 

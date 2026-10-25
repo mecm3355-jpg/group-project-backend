@@ -12,14 +12,15 @@ from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
 from app.schemas.file import FileDocument, FileStatus, FileStorage
-from app.schemas.job import JobDocument
+from app.schemas.job import ANALYZE_JOB_TYPE, JobDocument
 from app.schemas.mongo import utc_now
+from app.schemas.preview_api import FilePreview
+from app.schemas.result import ResultDocument
 from app.services.file_validation import CAPABILITIES, ZipLimits, detect_format
+from app.services.preview import build_preview
 from app.services.storage import LocalStorage
 
 COPY_CHUNK_BYTES = 1024 * 1024
-# 업로드와 함께 만드는 기본 처리 작업(추출·진단)의 종류(PRD 7.2)
-UPLOAD_JOB_TYPE = "analyze"
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ class FileService:
 
             now = utc_now()
             file_id = ObjectId()
-            job = JobDocument(field=file_id, type=UPLOAD_JOB_TYPE)
+            job = JobDocument(field=file_id, type=ANALYZE_JOB_TYPE)
             key = f"uploads/{now:%Y}/{now:%m}/{file_id}"
             doc = FileDocument(
                 _id=file_id,
@@ -194,3 +195,42 @@ class FileService:
         await self._jobs.delete_by_file(doc.id)
         await self._files.delete(doc.id)
         await asyncio.to_thread(self._storage.delete, doc.storage.key)
+
+    async def preview(self, file_id: str) -> FilePreview:
+        """원본 파일의 앞부분(표 20행 또는 텍스트 20줄)을 돌려준다.
+
+        파라미터:
+            file_id: 파일 ID 문자열
+        """
+        doc = await self.get(file_id)
+        path = self._storage.path(doc.storage.key)
+        if not path.is_file():
+            raise AppError("SOURCE_MISSING", "원본 파일이 저장소에 없습니다.", 409)
+        return await asyncio.to_thread(build_preview, str(doc.id), path, doc.extension)
+
+    async def start_processing(self, file_id: str) -> JobDocument:
+        """추출·진단 작업을 새로 만든다(재처리). 끝나지 않은 작업이 있으면 409.
+
+        파일 상태는 queued로, lastJobId는 새 작업으로 바꾼다. 실행은 워커가 한다.
+
+        파라미터:
+            file_id: 파일 ID 문자열
+        """
+        doc = await self.get(file_id)
+        if await self._jobs.has_active(doc.id):
+            raise AppError("JOB_ALREADY_RUNNING", "이미 처리 중인 작업이 있습니다.", 409)
+        job = await self._jobs.insert(JobDocument(field=doc.id, type=ANALYZE_JOB_TYPE))
+        await self._files.update_status(doc.id, "queued", last_job_id=job.id)
+        return job
+
+    async def latest_analysis(self, file_id: str) -> ResultDocument:
+        """가장 최근의 분석 결과(품질 진단 포함)를 돌려준다. 아직 없으면 404.
+
+        파라미터:
+            file_id: 파일 ID 문자열
+        """
+        doc = await self.get(file_id)
+        result = await self._results.get_latest(doc.id, "analysis")
+        if result is None:
+            raise AppError("RESULT_NOT_FOUND", "아직 진단 결과가 없습니다.", 404)
+        return result
