@@ -10,6 +10,7 @@ from app.core.database import Mongo
 from app.services.job_handlers import HANDLERS
 from app.services.job_runner import JobRunner
 from tests.conftest import requires_db
+from tests.document_files import make_docx, make_pdf
 
 pytestmark = requires_db
 
@@ -107,8 +108,25 @@ def test_preview_table_and_text(db_client: TestClient) -> None:
     assert text["lines"][0] == "INFO 0"
 
 
+def test_document_preview_and_quality(db_client: TestClient) -> None:
+    docx_id = upload(db_client, "minwon.docx", make_docx(["가로등 고장", "수청동 123"]))
+    pdf_id = upload(db_client, "scan.pdf", make_pdf([["Street light"], []]))
+
+    preview = db_client.get(f"/api/v1/files/{docx_id}/preview").json()["data"]
+    assert (preview["kind"], preview["format"]) == ("text", "docx")
+    assert preview["lines"] == ["가로등 고장", "수청동 123"]
+
+    assert run_worker(db_client) == 2
+    for file_id in (docx_id, pdf_id):
+        detail = db_client.get(f"/api/v1/files/{file_id}").json()["data"]
+        assert detail["status"] == "completed"
+    quality = db_client.get(f"/api/v1/files/{pdf_id}/quality").json()["data"]
+    assert [i["type"] for i in quality["issues"]] == ["no_text_layer"]
+
+
 def test_unsupported_format_fails_job_and_preview(db_client: TestClient) -> None:
-    file_id = upload(db_client, "scan.pdf", b"%PDF-1.7\n...")
+    # 이미지 OCR(PRD M3)은 아직 없다
+    file_id = upload(db_client, "photo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
 
     res = db_client.get(f"/api/v1/files/{file_id}/preview")
     assert res.status_code == 422

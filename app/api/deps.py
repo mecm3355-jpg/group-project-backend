@@ -8,6 +8,7 @@ from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
 from app.services.cleaning_service import CleaningService
+from app.services.dashboard_service import DashboardService
 from app.services.dataset_service import DatasetService
 from app.services.file_service import FileService
 from app.services.job_service import JobService
@@ -52,6 +53,17 @@ def get_job_service(mongo: Annotated[Mongo, Depends(get_mongo)]) -> JobService:
         mongo: Mongo 인스턴스
     """
     return JobService(JobRepository(mongo.db))
+
+
+def get_dashboard_service(mongo: Annotated[Mongo, Depends(get_mongo)]) -> DashboardService:
+    """요청마다 전체 통계 서비스를 만든다.
+
+    파라미터:
+        mongo: Mongo 인스턴스
+    """
+    return DashboardService(
+        FileRepository(mongo.db), JobRepository(mongo.db), ResultRepository(mongo.db)
+    )
 
 
 def get_cleaning_service(

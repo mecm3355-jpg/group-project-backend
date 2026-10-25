@@ -77,6 +77,24 @@ class BaseRepository(Generic[M]):
         cursor = self.collection.find(dict(query)).sort(list(sort)).skip(skip).limit(limit)
         return [self._model.model_validate(raw) async for raw in cursor]
 
+    async def count_by(self, field: str) -> dict[str, int]:
+        """필드 값별 문서 수를 센다. 값이 없는 문서는 세지 않는다. 대시보드 집계에 쓴다.
+
+        파라미터:
+            field: 묶을 필드의 MongoDB 이름(예: status)
+        """
+        pipeline: list[Document] = [
+            {"$match": {field: {"$type": "string"}}},
+            {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
+        ]
+        cursor = await self.collection.aggregate(pipeline)
+        counts: dict[str, int] = {}
+        async for row in cursor:
+            count = row["count"]
+            if isinstance(count, int):
+                counts[str(row["_id"])] = count
+        return counts
+
     async def delete(self, doc_id: ObjectId) -> bool:
         """_id로 문서 하나를 지운다. 지웠으면 True.
 

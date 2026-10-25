@@ -5,6 +5,7 @@ from itertools import islice
 from pathlib import Path
 
 from app.core.errors import AppError
+from app.processors.document import DOCUMENT_EXTENSIONS, open_document
 from app.processors.tabular import TABULAR_EXTENSIONS, Cell, open_table
 from app.processors.text import TEXT_EXTENSIONS, open_text
 from app.schemas.preview_api import FilePreview, PreviewCell
@@ -24,7 +25,7 @@ def to_preview_cell(value: Cell) -> PreviewCell:
 
 
 def build_preview(file_id: str, path: Path, extension: str) -> FilePreview:
-    """원본 파일의 앞 20행(표) 또는 앞 20줄(텍스트)을 읽는다. 스레드에서 실행한다.
+    """원본 파일의 앞 20행(표) 또는 앞 20줄(텍스트·문서)을 읽는다. 스레드에서 실행한다.
 
     파라미터:
         file_id: 파일 ID(응답에 담는다)
@@ -56,6 +57,16 @@ def build_preview(file_id: str, path: Path, extension: str) -> FilePreview:
                 encoding=text.encoding,
                 limit=PREVIEW_LIMIT,
                 lines=list(islice(text.lines, PREVIEW_LIMIT)),
+            )
+    if extension in DOCUMENT_EXTENSIONS:
+        # 문서는 빈 줄을 뺀 글자 줄을 보여준다. DOCX 표의 행은 칸을 탭으로 이은 한 줄이다
+        with open_document(path, extension) as document:
+            return FilePreview(
+                file_id=file_id,
+                kind="text",
+                format=document.format,
+                limit=PREVIEW_LIMIT,
+                lines=list(islice(document.lines, PREVIEW_LIMIT)),
             )
     raise AppError(
         "PREVIEW_NOT_SUPPORTED", f"{extension} 파일의 미리보기는 아직 지원하지 않습니다.", 422

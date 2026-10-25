@@ -4,7 +4,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app.core.database import Document
 from app.repositories.base import BaseRepository
-from app.schemas.result import ResultDocument, ResultType
+from app.schemas.result import QualityResult, ResultDocument, ResultType
 
 
 class ResultRepository(BaseRepository[ResultDocument]):
@@ -64,6 +64,20 @@ class ResultRepository(BaseRepository[ResultDocument]):
         if result_type is not None:
             query["resultType"] = result_type
         return await self._find(query, [("resultType", ASCENDING), ("version", DESCENDING)])
+
+    async def latest_qualities(self, result_type: ResultType) -> list[QualityResult]:
+        """파일마다 결과 종류별 최신 버전의 품질 진단 결과를 모아 돌려준다. 대시보드 집계에 쓴다.
+
+        파라미터:
+            result_type: analysis, cleaning, report 중 하나
+        """
+        pipeline: list[Document] = [
+            {"$match": {"resultType": result_type}},
+            {"$sort": {"field": ASCENDING, "version": DESCENDING}},
+            {"$group": {"_id": "$field", "quality": {"$first": "$quality"}}},
+        ]
+        cursor = await self.collection.aggregate(pipeline)
+        return [QualityResult.model_validate(row["quality"]) async for row in cursor]
 
     async def delete_by_file(self, file_id: ObjectId) -> int:
         """한 파일의 결과를 모두 지우고 지운 개수를 돌려준다.

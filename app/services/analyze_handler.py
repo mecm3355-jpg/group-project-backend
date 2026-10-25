@@ -4,12 +4,13 @@ import asyncio
 from pathlib import Path
 
 from app.core.errors import AppError
+from app.processors.document import DOCUMENT_EXTENSIONS, open_document
 from app.processors.tabular import TABULAR_EXTENSIONS, open_table
 from app.processors.text import TEXT_EXTENSIONS, open_text
 from app.repositories.results import ResultRepository
 from app.schemas.result import ResultDocument
 from app.services.job_runner import JobContext
-from app.services.profiling import Profile, profile_table, profile_text
+from app.services.profiling import Profile, profile_document, profile_table, profile_text
 
 
 def build_profile(path: Path, extension: str) -> Profile:
@@ -25,6 +26,9 @@ def build_profile(path: Path, extension: str) -> Profile:
     if extension in TEXT_EXTENSIONS:
         with open_text(path, extension) as text:
             return profile_text(text)
+    if extension in DOCUMENT_EXTENSIONS:
+        with open_document(path, extension) as document:
+            return profile_document(document)
     raise AppError(
         "ANALYSIS_NOT_SUPPORTED",
         f"{extension} 파일의 추출·진단은 아직 지원하지 않습니다.",

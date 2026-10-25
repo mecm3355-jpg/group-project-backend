@@ -11,6 +11,7 @@ from datetime import date, datetime, time
 
 from pydantic import JsonValue
 
+from app.processors.document import DocumentText
 from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
 from app.schemas.dataset import SOURCE_COLUMNS
@@ -442,4 +443,53 @@ def profile_text(text: TextLines) -> Profile:
     }
     if is_log:
         analysis["keywordCounts"] = {k: v for k, v in counts.items() if v}
+    return Profile(QualityResult(issues=issues), analysis)
+
+
+def profile_document(document: DocumentText) -> Profile:
+    """문서 전체를 한 번 돌며 글자 줄 수·글자 수를 센다. PDF는 글자 없는 페이지를 찾는다.
+
+    글자 없는 페이지는 스캔본일 가능성이 높아 OCR이 필요하다고 알린다(OCR은 PRD M3).
+
+    파라미터:
+        document: open_document로 연 문서(lines를 이 함수가 끝까지 읽는다)
+    """
+    line_count = characters = 0
+    for line in document.lines:
+        line_count += 1
+        characters += len(line.strip())
+
+    issues: list[QualityIssue] = []
+    if document.pages_without_text:
+        all_pages = document.pages_without_text == document.page_count
+        issues.append(
+            QualityIssue(
+                type="no_text_layer",
+                severity="high" if all_pages else "medium",
+                count=document.pages_without_text,
+                location=None,
+                message=(
+                    f"글자가 없는 페이지 {document.pages_without_text}개가 발견되었습니다. "
+                    "스캔본이면 OCR이 필요합니다."
+                ),
+            )
+        )
+    elif line_count == 0:
+        issues.append(
+            QualityIssue(
+                type="no_text",
+                severity="high",
+                count=1,
+                location=None,
+                message="문서에서 추출된 글자가 없습니다.",
+            )
+        )
+
+    analysis: dict[str, JsonValue] = {"format": document.format}
+    if document.page_count is not None:
+        analysis["pageCount"] = document.page_count
+        analysis["pagesWithoutText"] = document.pages_without_text
+    else:
+        analysis["tableCount"] = document.table_count
+    analysis.update({"lineCount": line_count, "characterCount": characters})
     return Profile(QualityResult(issues=issues), analysis)

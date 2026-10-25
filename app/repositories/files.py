@@ -28,6 +28,17 @@ class FileRepository(BaseRepository[FileDocument]):
         """
         super().__init__(db, FileDocument)
 
+    async def total_size_bytes(self) -> int:
+        """모든 파일의 크기 합(바이트)을 돌려준다.
+
+        파라미터: 없음
+        """
+        pipeline: list[Document] = [{"$group": {"_id": None, "total": {"$sum": "$sizeBytes"}}}]
+        cursor = await self.collection.aggregate(pipeline)
+        rows = [row async for row in cursor]
+        total = rows[0]["total"] if rows else 0
+        return total if isinstance(total, int) else 0
+
     @staticmethod
     def _query(status: FileStatus | None, name: str | None) -> dict[str, object]:
         """search·count에 공통으로 쓰는 조건을 만든다.
