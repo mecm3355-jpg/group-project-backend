@@ -159,23 +159,27 @@ def _excel_cell(value: object) -> Cell:
 def _open_xlsx(path: Path) -> Iterator[Table]:
     """XLSX의 첫 번째 시트를 연다(값만, 수식 결과 기준).
 
+    원본은 저장소에 확장자 없이 저장되므로, 파일 이름의 확장자를 검사하는 openpyxl에
+    경로 대신 열린 파일 객체를 넘긴다.
+
     파라미터:
         path: 파일 경로
     """
-    try:
-        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception as exc:  # openpyxl은 손상 유형마다 다른 예외를 던진다
-        raise AppError("INVALID_FILE", "엑셀 파일을 읽을 수 없습니다.", 422) from exc
-    try:
-        sheet = workbook.worksheets[0]
-        values = sheet.iter_rows(values_only=True)
-        header = next(values, None)
-        if header is None:
-            raise AppError("EMPTY_TABLE", "표에 머리글 행이 없습니다.", 422)
-        rows = ([_excel_cell(v) for v in row] for row in values)
-        yield _make_table("xlsx", None, sheet.title, [_excel_cell(v) for v in header], rows)
-    finally:
-        workbook.close()
+    with path.open("rb") as stream:
+        try:
+            workbook = openpyxl.load_workbook(stream, read_only=True, data_only=True)
+        except Exception as exc:  # openpyxl은 손상 유형마다 다른 예외를 던진다
+            raise AppError("INVALID_FILE", "엑셀 파일을 읽을 수 없습니다.", 422) from exc
+        try:
+            sheet = workbook.worksheets[0]
+            values = sheet.iter_rows(values_only=True)
+            header = next(values, None)
+            if header is None:
+                raise AppError("EMPTY_TABLE", "표에 머리글 행이 없습니다.", 422)
+            rows = ([_excel_cell(v) for v in row] for row in values)
+            yield _make_table("xlsx", None, sheet.title, [_excel_cell(v) for v in header], rows)
+        finally:
+            workbook.close()
 
 
 @contextmanager

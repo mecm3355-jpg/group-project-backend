@@ -112,6 +112,31 @@ def test_xlsx_first_sheet_with_types(tmp_path: Path) -> None:
     assert rows == [[datetime(2026, 7, 14), 3, "가로등"], [None, 2.5, None]]
 
 
+@pytest.mark.parametrize("extension", ["xlsx", "xls"])
+def test_excel_stored_without_extension(tmp_path: Path, extension: str) -> None:
+    # 업로드 원본은 저장소에 확장자 없이(uploads/YYYY/MM/<fileId>) 저장된다
+    source = tmp_path / f"a.{extension}"
+    if extension == "xlsx":
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        assert sheet is not None
+        sheet.append(["이름"])
+        sheet.append(["홍길동"])
+        workbook.save(source)
+    else:
+        book = xlwt.Workbook()
+        book.add_sheet("s").write(0, 0, "이름")
+        book.get_sheet(0).write(1, 0, "홍길동")
+        book.save(str(source))
+    stored = tmp_path / "6addfb33f4a5a49f7c5c1def"
+    source.rename(stored)
+
+    columns, rows, _ = read_all(stored, extension)
+
+    assert columns == ["이름"]
+    assert rows == [["홍길동"]]
+
+
 def test_xls_first_sheet_with_types(tmp_path: Path) -> None:
     path = tmp_path / "a.xls"
     workbook = xlwt.Workbook()

@@ -8,8 +8,10 @@ from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
 from app.services.cleaning_service import CleaningService
+from app.services.dataset_service import DatasetService
 from app.services.file_service import FileService
 from app.services.job_service import JobService
+from app.services.report_service import ReportService
 from app.services.storage import LocalStorage
 
 
@@ -67,4 +69,41 @@ def get_cleaning_service(
         JobRepository(mongo.db),
         ResultRepository(mongo.db),
         LocalStorage(settings.storage_root),
+    )
+
+
+def get_report_service(
+    mongo: Annotated[Mongo, Depends(get_mongo)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> ReportService:
+    """요청마다 리포트 서비스를 만든다.
+
+    파라미터:
+        mongo: Mongo 인스턴스
+        settings: 앱 설정
+    """
+    return ReportService(
+        FileRepository(mongo.db),
+        JobRepository(mongo.db),
+        ResultRepository(mongo.db),
+        settings,
+    )
+
+
+def get_dataset_service(
+    mongo: Annotated[Mongo, Depends(get_mongo)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> DatasetService:
+    """요청마다 통합 데이터셋 서비스를 만든다.
+
+    파라미터:
+        mongo: Mongo 인스턴스
+        settings: 앱 설정
+    """
+    return DatasetService(
+        FileRepository(mongo.db),
+        JobRepository(mongo.db),
+        ResultRepository(mongo.db),
+        LocalStorage(settings.storage_root),
+        settings,
     )

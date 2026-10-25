@@ -5,29 +5,40 @@ from fastapi import status as http_status
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from app.api.deps import get_cleaning_service, get_file_service
+from app.api.deps import (
+    get_cleaning_service,
+    get_dataset_service,
+    get_file_service,
+    get_report_service,
+)
 from app.schemas.cleaning import CleanRequest
 from app.schemas.cleaning_api import (
     CleaningSuggestions,
     CleanStartResult,
+    ReportStartResult,
     SuggestedRule,
     VersionItem,
     VersionList,
 )
 from app.schemas.common import ApiResponse, ok
+from app.schemas.dataset import MappingSuggestion, MergeRequest, MergeStartResult
 from app.schemas.file import FileStatus
 from app.schemas.file_api import FileDeleteResult, FileDetail, FileList, FileUploadResult
 from app.schemas.preview_api import FilePreview
 from app.schemas.process_api import ProcessStartResult, QualityReport
 from app.schemas.result import ResultType
 from app.services.cleaning_service import CleaningService
+from app.services.dataset_service import DatasetService
 from app.services.export import ExportFormat
 from app.services.file_service import FileService
+from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/files", tags=["files"])
 
 Service = Annotated[FileService, Depends(get_file_service)]
 Cleaning = Annotated[CleaningService, Depends(get_cleaning_service)]
+Reports = Annotated[ReportService, Depends(get_report_service)]
+Datasets = Annotated[DatasetService, Depends(get_dataset_service)]
 
 
 @router.post(
@@ -52,6 +63,32 @@ async def upload_file(
             file_type=uploaded.file.extension,
             status=uploaded.file.status,
             message="파일이 등록되었습니다.",
+        )
+    )
+
+
+@router.post(
+    "/merge",
+    response_model=ApiResponse[MergeStartResult],
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def merge_files(service: Datasets, request: MergeRequest) -> ApiResponse[MergeStartResult]:
+    """[명세서 외] 여러 원본 파일을 공통 필드로 합친 통합 파일을 만든다.
+
+    매핑은 POST /files/{file_id}/mapping-suggestion으로 제안받아 확인·수정한 것을 넣는다.
+    통합 파일은 일반 파일과 같아서 진단·정제·AI 리포트 API를 그대로 쓴다.
+
+    파라미터:
+        service: 통합 데이터셋 서비스
+        request: 합칠 파일과 파일별 매핑
+    """
+    merged, job = await service.start_merge(request)
+    return ok(
+        MergeStartResult(
+            file_id=str(merged.id),
+            job_id=str(job.id),
+            status=job.status,
+            message="통합 데이터셋 작업이 등록되었습니다.",
         )
     )
 
@@ -232,3 +269,39 @@ async def export_file(
     return FileResponse(
         export.path, media_type=export.media_type, filename=export.filename, background=cleanup
     )
+
+
+@router.post(
+    "/{file_id}/report",
+    response_model=ApiResponse[ReportStartResult],
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def create_report(service: Reports, file_id: str) -> ApiResponse[ReportStartResult]:
+    """AI 분석 리포트 작업을 만든다. 결과는 GET /versions?type=report에서 본다.
+
+    파라미터:
+        service: 리포트 서비스
+        file_id: 파일 ID
+    """
+    job = await service.start_report(file_id)
+    return ok(
+        ReportStartResult(
+            job_id=str(job.id),
+            file_id=file_id,
+            status=job.status,
+            message="AI 분석 리포트 작업이 등록되었습니다.",
+        )
+    )
+
+
+@router.post("/{file_id}/mapping-suggestion", response_model=ApiResponse[MappingSuggestion])
+async def suggest_mapping(service: Datasets, file_id: str) -> ApiResponse[MappingSuggestion]:
+    """[명세서 외] 원본 열 → 공통 필드 매핑을 제안한다(AI 또는 열 이름 규칙).
+
+    데이터 값은 AI에 보내지 않는다. 결과를 확인·수정해 POST /files/merge에 넣는다.
+
+    파라미터:
+        service: 통합 데이터셋 서비스
+        file_id: 파일 ID
+    """
+    return ok(await service.suggest_mapping(file_id))

@@ -61,6 +61,20 @@ class ChatBackend(Protocol):
         ...
 
 
+def llm_configured(settings: Settings, tier: ModelTier) -> bool:
+    """tier 배포로 호출할 연결 정보가 모두 있는지 본다(요청 단계에서 빨리 거부할 때 쓴다).
+
+    파라미터:
+        settings: 앱 설정
+        tier: fast 또는 deep
+    """
+    try:
+        AzureChatBackend(settings, tier)
+    except AppError:
+        return False
+    return True
+
+
 class AzureChatBackend:
     """Azure OpenAI(Azure AI Foundry) 배포를 호출한다."""
 

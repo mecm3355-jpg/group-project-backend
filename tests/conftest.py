@@ -46,14 +46,17 @@ requires_db = pytest.mark.skipif(
 )
 
 
-def make_settings(storage_root: Path, **overrides: int) -> Settings:
+def make_settings(storage_root: Path, **overrides: object) -> Settings:
     """테스트용 설정을 만든다. 저장소는 임시 폴더, DB는 연결하지 않는 주소를 쓴다.
+
+    .env는 읽지 않는다(실제 Atlas·Azure 값이 테스트에 섞이지 않게).
 
     파라미터:
         storage_root: 원본 파일 저장소로 쓸 임시 폴더
-        overrides: 바꿀 숫자 설정(예: max_upload_bytes=10)
+        overrides: 바꿀 설정(예: max_upload_bytes=10)
     """
     settings = Settings(
+        _env_file=None,
         mongodb_uri="mongodb://localhost:27017",
         mongodb_db_name="test",
         storage_root=storage_root,

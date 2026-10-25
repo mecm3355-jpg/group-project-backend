@@ -3,12 +3,16 @@
 등록되지 않은 종류의 작업은 워커가 가져가지 않고 queued로 남는다.
 """
 
-from app.schemas.job import ANALYZE_JOB_TYPE, CLEAN_JOB_TYPE
+from app.schemas.job import ANALYZE_JOB_TYPE, CLEAN_JOB_TYPE, MERGE_JOB_TYPE, REPORT_JOB_TYPE
 from app.services.analyze_handler import analyze
 from app.services.clean_handler import clean
 from app.services.job_runner import JobHandler
+from app.services.merge_handler import merge
+from app.services.report_handler import report
 
 HANDLERS: dict[str, JobHandler] = {
     ANALYZE_JOB_TYPE: analyze,
     CLEAN_JOB_TYPE: clean,
+    REPORT_JOB_TYPE: report,
+    MERGE_JOB_TYPE: merge,
 }

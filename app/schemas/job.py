@@ -12,6 +12,10 @@ JobStatus = Literal["queued", "processing", "completed", "failed"]
 ANALYZE_JOB_TYPE = "analyze"
 # 승인한 정제 규칙 적용 작업. POST /files/{file_id}/clean 때 만든다
 CLEAN_JOB_TYPE = "clean"
+# AI 분석 리포트 작업. POST /files/{file_id}/report 때 만든다
+REPORT_JOB_TYPE = "report"
+# 여러 원본을 공통 필드로 합치는 작업. POST /files/merge 때 만든다(대상은 새 통합 파일)
+MERGE_JOB_TYPE = "merge"
 
 
 class JobError(MongoModel):

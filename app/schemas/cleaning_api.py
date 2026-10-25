@@ -32,8 +32,21 @@ class CleanStartResult(ApiModel):
     message: str
 
 
+class ReportStartResult(ApiModel):
+    """POST /api/v1/files/{file_id}/report 응답 — 새로 만든 리포트 작업."""
+
+    job_id: str
+    file_id: str
+    status: JobStatus
+    message: str
+
+
 class VersionItem(ApiModel):
-    """결과 버전 하나의 요약. 정제 결과면 cleaning(규칙·변경 내역·전후 요약)도 담는다."""
+    """결과 버전 하나의 요약.
+
+    정제 결과면 cleaning(규칙·변경 내역·전후 요약),
+    리포트면 ai(리포트 본문·근거 버전·사용 내역)도 담는다.
+    """
 
     result_type: ResultType
     version: int
@@ -43,6 +56,7 @@ class VersionItem(ApiModel):
     issue_count: int
     row_count: JsonValue
     cleaning: dict[str, JsonValue] | None
+    ai: dict[str, JsonValue] | None
 
     @classmethod
     def from_document(cls, doc: ResultDocument) -> "VersionItem":
@@ -63,6 +77,7 @@ class VersionItem(ApiModel):
             issue_count=len(doc.quality.issues),
             row_count=doc.analysis.get("rowCount"),
             cleaning=cleaning,
+            ai=doc.ai or None,
         )
 
 
