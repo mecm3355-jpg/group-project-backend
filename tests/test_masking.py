@@ -76,11 +76,24 @@ def test_masks_mixed_complaint() -> None:
     assert result.counts == {"인명": 2, "상세주소": 1, "차량": 1, "전화": 1}
 
 
-def test_masking_is_idempotent() -> None:
-    once = mask_text("홍길동 주무관 010-1234-5678 수청동 12-3").text
+@pytest.mark.parametrize(
+    "text",
+    [
+        "홍길동 주무관 010-1234-5678 수청동 12-3",
+        # 도로명 안의 숫자(106번길)를 다시 건물번호로 보지 않는다(포항 실데이터에서 발견)
+        "마을 진입로 부터 한동로106번길 54인근 주택가 까지입니다.",
+    ],
+)
+def test_masking_is_idempotent(text: str) -> None:
+    once = mask_text(text).text
 
     assert mask_text(once).text == once
     assert find_pii(once) == []
+
+
+def test_road_name_number_is_kept() -> None:
+    assert mask_text("한동로106번길 54").text == "한동로106번길 [상세주소]"
+    assert mask_text("한동로106번길 인근").text == "한동로106번길 인근"
 
 
 def test_find_pii_lists_remaining_types() -> None:

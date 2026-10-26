@@ -7,7 +7,8 @@ Python + FastAPI(Modular Monolith) + MongoDB Atlas
 
 ## 명령어
 가상환경은 Google Drive 동기화를 피하려고 프로젝트 밖에 둔다(예: `~/.venvs/datalens`).
-- 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"`
+- 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"` (민원 분석 임베딩까지: `".[dev,analysis]"`, torch·bge-m3 약 2.3GB)
+- M2 시뮬레이션: `python scripts/m2_simulation.py [--sweep] [--llm]` — `샘플데이타/`를 읽어 `reports/m2/`에 리포트 작성(둘 다 git 제외, `--llm`은 마스킹본을 Azure로 전송)
 - 실행(API): `uvicorn app.main:create_app --factory --reload`
 - 실행(워커): `python -m app.worker` (API와 별도 프로세스)
 - 실행(DB 없이 로컬): `python scripts/dev_server.py` — 임시 MongoDB + API + 워커, 종료하면 데이터 삭제

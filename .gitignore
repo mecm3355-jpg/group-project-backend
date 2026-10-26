@@ -25,3 +25,7 @@ storage-dev/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 샘플 데이터(실제 민원·실명 포함, 커밋 금지)와 분석 산출물
+샘플데이타/
+reports/
