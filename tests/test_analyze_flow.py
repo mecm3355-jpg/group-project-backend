@@ -124,13 +124,13 @@ def test_document_preview_and_quality(db_client: TestClient) -> None:
     assert [i["type"] for i in quality["issues"]] == ["no_text_layer"]
 
 
-def test_unsupported_format_fails_job_and_preview(db_client: TestClient) -> None:
-    # 이미지 OCR(PRD M3)은 아직 없다
+def test_image_without_ocr_fails_job_and_preview(db_client: TestClient) -> None:
+    # 테스트 설정은 OCR을 꺼 둔다(make_settings). 이미지는 OCR 없이는 읽을 수 없다
     file_id = upload(db_client, "photo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
 
     res = db_client.get(f"/api/v1/files/{file_id}/preview")
-    assert res.status_code == 422
-    assert res.json()["error"]["code"] == "PREVIEW_NOT_SUPPORTED"
+    assert res.status_code == 503
+    assert res.json()["error"]["code"] == "OCR_NOT_AVAILABLE"
 
     run_worker(db_client)
     detail = db_client.get(f"/api/v1/files/{file_id}").json()["data"]
@@ -138,7 +138,7 @@ def test_unsupported_format_fails_job_and_preview(db_client: TestClient) -> None
     assert detail["status"] == "failed"
     assert job["status"] == "failed"
     assert job["stage"] == "parsing"
-    assert job["error"]["code"] == "ANALYSIS_NOT_SUPPORTED"
+    assert job["error"]["code"] == "OCR_NOT_AVAILABLE"
 
 
 @pytest.mark.parametrize("path", ["preview", "quality"])

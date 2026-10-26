@@ -449,7 +449,7 @@ def profile_text(text: TextLines) -> Profile:
 def profile_document(document: DocumentText) -> Profile:
     """문서 전체를 한 번 돌며 글자 줄 수·글자 수를 센다. PDF는 글자 없는 페이지를 찾는다.
 
-    글자 없는 페이지는 스캔본일 가능성이 높아 OCR이 필요하다고 알린다(OCR은 PRD M3).
+    OCR하지 못한 글자 없는 페이지는 "OCR 필요"로, OCR 신뢰도가 낮은 줄은 "검수 필요"로 알린다.
 
     파라미터:
         document: open_document로 연 문서(lines를 이 함수가 끝까지 읽는다)
@@ -485,7 +485,35 @@ def profile_document(document: DocumentText) -> Profile:
             )
         )
 
+    if document.ocr_low_confidence_lines:
+        pages = ", ".join(str(p) for p in document.ocr_low_confidence_pages[:10])
+        issues.append(
+            QualityIssue(
+                type="low_ocr_confidence",
+                severity="medium",
+                count=document.ocr_low_confidence_lines,
+                location=f"page {pages}",
+                message=(
+                    f"OCR 신뢰도가 {document.low_confidence} 미만인 줄 "
+                    f"{document.ocr_low_confidence_lines}개가 있습니다. 사람이 검수해야 합니다."
+                ),
+            )
+        )
+
     analysis: dict[str, JsonValue] = {"format": document.format}
+    if document.ocr_pages:
+        analysis["method"] = "ocr" if document.ocr_pages == document.page_count else "text+ocr"
+        analysis["ocr"] = {
+            "engine": document.ocr_engine,
+            "pages": document.ocr_pages,
+            "lineCount": document.ocr_line_count,
+            "meanConfidence": round(document.ocr_confidence_total / document.ocr_line_count, 4)
+            if document.ocr_line_count
+            else None,
+            "lowConfidenceLines": document.ocr_low_confidence_lines,
+        }
+    else:
+        analysis["method"] = "text"
     if document.page_count is not None:
         analysis["pageCount"] = document.page_count
         analysis["pagesWithoutText"] = document.pages_without_text

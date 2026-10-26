@@ -5,7 +5,7 @@ from itertools import islice
 from pathlib import Path
 
 from app.core.errors import AppError
-from app.processors.document import DOCUMENT_EXTENSIONS, open_document
+from app.processors.document import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, OcrOptions, open_document
 from app.processors.tabular import TABULAR_EXTENSIONS, Cell, open_table
 from app.processors.text import TEXT_EXTENSIONS, open_text
 from app.schemas.preview_api import FilePreview, PreviewCell
@@ -24,13 +24,18 @@ def to_preview_cell(value: Cell) -> PreviewCell:
     return value
 
 
-def build_preview(file_id: str, path: Path, extension: str) -> FilePreview:
-    """원본 파일의 앞 20행(표) 또는 앞 20줄(텍스트·문서)을 읽는다. 스레드에서 실행한다.
+def build_preview(
+    file_id: str, path: Path, extension: str, ocr: OcrOptions | None = None
+) -> FilePreview:
+    """원본 파일의 앞 20행(표) 또는 앞 20줄(텍스트·문서·이미지)을 읽는다. 스레드에서 실행한다.
+
+    스캔 PDF·이미지는 앞 20줄이 나올 때까지만 OCR한다.
 
     파라미터:
         file_id: 파일 ID(응답에 담는다)
         path: 원본 파일 경로
         extension: 파일 확장자
+        ocr: 스캔 PDF·이미지를 읽을 OCR 설정(없으면 OCR하지 않는다)
     """
     if extension in TABULAR_EXTENSIONS:
         with open_table(path, extension) as table:
@@ -58,9 +63,9 @@ def build_preview(file_id: str, path: Path, extension: str) -> FilePreview:
                 limit=PREVIEW_LIMIT,
                 lines=list(islice(text.lines, PREVIEW_LIMIT)),
             )
-    if extension in DOCUMENT_EXTENSIONS:
+    if extension in DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS:
         # 문서는 빈 줄을 뺀 글자 줄을 보여준다. DOCX 표의 행은 칸을 탭으로 이은 한 줄이다
-        with open_document(path, extension) as document:
+        with open_document(path, extension, ocr) as document:
             return FilePreview(
                 file_id=file_id,
                 kind="text",

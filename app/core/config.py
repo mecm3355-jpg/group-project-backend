@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     azure_openai_deployment_deep: str | None = None
     llm_timeout_seconds: float = 120.0
 
+    # OCR(PRD 7.6): 로컬 Tesseract. 경로를 비우면 PATH와 Windows 기본 설치 위치에서 찾는다.
+    # 한국어 모델(kor.traineddata)이 기본 폴더에 없으면 TESSERACT_TESSDATA_DIR로 지정한다
+    tesseract_cmd: str | None = None
+    tesseract_tessdata_dir: Path | None = None
+    ocr_languages: str = "kor"
+    ocr_dpi: int = 300
+    # 줄 신뢰도가 이 값 미만이면 사람 검수 대상
+    ocr_low_confidence: float = 0.6
+
 
 @lru_cache
 def get_settings() -> Settings:

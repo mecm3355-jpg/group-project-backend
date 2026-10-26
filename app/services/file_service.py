@@ -18,6 +18,7 @@ from app.schemas.preview_api import FilePreview
 from app.schemas.result import ResultDocument
 from app.services.artifacts import job_dir_key, results_dir_key
 from app.services.file_validation import CAPABILITIES, ZipLimits, detect_format
+from app.services.ocr_setup import ocr_options
 from app.services.preview import build_preview
 from app.services.storage import LocalStorage
 
@@ -211,7 +212,9 @@ class FileService:
         path = self._storage.path(doc.storage.key)
         if not path.is_file():
             raise AppError("SOURCE_MISSING", "원본 파일이 저장소에 없습니다.", 409)
-        return await asyncio.to_thread(build_preview, str(doc.id), path, doc.extension)
+        return await asyncio.to_thread(
+            build_preview, str(doc.id), path, doc.extension, ocr_options(self._settings)
+        )
 
     async def start_processing(self, file_id: str) -> JobDocument:
         """추출·진단 작업을 새로 만든다(재처리). 끝나지 않은 작업이 있으면 409.

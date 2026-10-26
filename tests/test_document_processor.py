@@ -67,6 +67,7 @@ def test_profile_pdf_reports_missing_text_layer(tmp_path: Path) -> None:
 
     assert profile.analysis == {
         "format": "pdf",
+        "method": "text",
         "pageCount": 3,
         "pagesWithoutText": 2,
         "lineCount": 1,
@@ -97,6 +98,7 @@ def test_profile_docx(tmp_path: Path) -> None:
 
     assert profile.analysis == {
         "format": "docx",
+        "method": "text",
         "tableCount": 1,
         "lineCount": 3,
         "characterCount": 10,
