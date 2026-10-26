@@ -2,7 +2,8 @@
 
 실행: python scripts/dev_server.py  (Ctrl+C로 종료)
 - MongoDB는 이 PC에 임시로 띄우며, 종료하면 데이터가 사라진다(Atlas 연결 불필요).
-- 원본·산출물은 storage-dev/ 폴더에 저장한다(git 제외).
+- 원본·산출물은 ~/.cache/datalens/storage-dev에 저장한다. 프로젝트 폴더(Google Drive) 안에 두면
+  Drive 동기화가 확장자 없이 저장한 원본 이름을 바꿔(예: .pdf를 붙임) 작업이 원본을 못 찾는다.
 - .env의 AZURE_OPENAI_* 값은 그대로 쓴다. MONGODB_URI는 무시한다.
 - 화면: http://127.0.0.1:8000/docs
 """
@@ -45,7 +46,7 @@ def main() -> None:
         os.environ,
         MONGODB_URI=mongo._mongod.connection_string,
         MONGODB_DB_NAME="datalens_dev",
-        STORAGE_ROOT=str(ROOT / "storage-dev"),
+        STORAGE_ROOT=str(Path.home() / ".cache" / "datalens" / "storage-dev"),
         PYTHONIOENCODING="utf-8",
     )
     processes = [

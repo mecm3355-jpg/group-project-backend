@@ -49,9 +49,11 @@ from app.services.issue_grouping import IssueInput, group_issues
 from app.services.job_runner import JobContext
 from app.services.llm import LlmClient, create_llm_client, llm_configured
 from app.services.masking import mask_text
-from app.services.naming import suggest_name
+from app.services.naming import NameSuggestion, suggest_name
 from app.services.ocr_setup import ocr_options
 
+# 새 후보와 이전 후보의 소속 민원이 이 비율(Jaccard) 이상 겹치면 이름 초안을 이어 쓴다
+REUSE_OVERLAP = 0.5
 STATUS_MAP: dict[str, AssignStatus] = {
     "assigned": "auto",
     "ambiguous": "ambiguous",
@@ -94,6 +96,31 @@ def _review_reason(
     if uncertain:
         return "attributeUncertain"
     return None
+
+
+def _reuse_suggestion(
+    members: set[str],
+    previous: dict[ObjectId, CandidateDocument],
+    previous_members: dict[ObjectId, set[str]],
+) -> NameSuggestion | None:
+    """소속 민원이 REUSE_OVERLAP 이상 겹치는 이전 결정 전 후보의 이름 초안. 없으면 None.
+
+    파일마다 미배정 풀을 다시 군집화하므로, 같은 후보의 이름을 매번 LLM에 다시 묻지 않게 한다.
+
+    파라미터:
+        members: 새 후보의 민원 _id 문자열
+        previous: 이전 결정 전 후보
+        previous_members: 이전 후보 _id → 민원 _id 문자열
+    """
+    best: CandidateDocument | None = None
+    best_overlap = REUSE_OVERLAP
+    for candidate_id, old in previous_members.items():
+        overlap = len(members & old) / len(members | old)
+        if overlap >= best_overlap:
+            best, best_overlap = previous[candidate_id], overlap
+    if best is None:
+        return None
+    return NameSuggestion(best.suggested_name, best.suggested_definition, best.suggested_group)
 
 
 async def _attributes(
@@ -264,9 +291,16 @@ async def analyze_complaints(ctx: JobContext) -> None:
     vector_of = {doc.id: vectors[i] for i, doc in enumerate(docs)}
 
     await ctx.report("discovering", 65)
+    # 결정 전 후보는 새 후보로 바뀐다. 소속이 거의 같은 새 후보는 이전 이름 초안을 이어 쓴다
+    previous = {c.id: c for c in await candidates_repo.list_by("pending")}
+    pool_before = await complaints_repo.unassigned_pool()
+    previous_members: dict[ObjectId, set[str]] = {}
+    for complaint in pool_before:
+        if complaint.candidate_id in previous:
+            previous_members.setdefault(complaint.candidate_id, set()).add(str(complaint.id))
     stale_candidates = await candidates_repo.delete_pending()
     await complaints_repo.clear_candidates(stale_candidates)
-    old_pool = [c for c in await complaints_repo.unassigned_pool() if c.file_id != ctx.file.id]
+    old_pool = [c for c in pool_before if c.file_id != ctx.file.id]
     old_vectors = await _pool_vectors(old_pool, ctx, embedder)
     new_pool = [d for d in docs if d.assign_status == "unassigned"]
     pool = [*old_pool, *new_pool]
@@ -289,9 +323,11 @@ async def analyze_complaints(ctx: JobContext) -> None:
     candidates: list[CandidateDocument] = []
     member_of: dict[ObjectId, ObjectId] = {}
     for candidate in found:
-        suggestion = await suggest_name(
-            candidate.keywords, [text_of[i] for i in candidate.exemplar_ids], deep_client
-        )
+        suggestion = _reuse_suggestion(set(candidate.member_ids), previous, previous_members)
+        if suggestion is None:
+            suggestion = await suggest_name(
+                candidate.keywords, [text_of[i] for i in candidate.exemplar_ids], deep_client
+            )
         candidate_doc = CandidateDocument(
             job_id=ctx.job.id,
             period=max(period_of[i] for i in candidate.member_ids),

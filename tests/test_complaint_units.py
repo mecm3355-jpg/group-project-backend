@@ -253,3 +253,25 @@ def test_vectors_round_trip(tmp_path: Path) -> None:
 
     assert list(loaded) == [ids[1]]
     assert np.allclose(loaded[ids[1]], [0.0, 1.0])
+
+
+def test_overlapping_candidate_reuses_previous_name() -> None:
+    from app.schemas.complaint import CandidateDocument
+    from app.services.complaint_handler import _reuse_suggestion
+
+    old = CandidateDocument(
+        job_id=ObjectId(),
+        period="2026-10",
+        size=4,
+        keywords=["가로등"],
+        exemplar_ids=[],
+        suggested_name="가로등 고장",
+        suggested_group="안전·조명",
+    )
+    previous_members = {old.id: {"a", "b", "c", "d"}}
+
+    same = _reuse_suggestion({"a", "b", "c", "e"}, {old.id: old}, previous_members)  # 3/5
+    different = _reuse_suggestion({"a", "x", "y", "z"}, {old.id: old}, previous_members)  # 1/7
+
+    assert same is not None and (same.name, same.group) == ("가로등 고장", "안전·조명")
+    assert different is None

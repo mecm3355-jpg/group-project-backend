@@ -14,7 +14,9 @@ candidate_min_size = 5
 # HDBSCAN 최소 군집 크기. candidate_min_size보다 작은 군집은 2개월 연속 등장할 때만 후보
 cluster_min_size = 3
 # [M2 제안, PRD 5.3 외] 응집도(소속 민원과 중심의 평균 코사인)가 이 값 미만인 군집은 후보 보류. 0이면 끔
-min_cohesion = 0.88
+# M2 가상민원으로 0.88을 정했으나(템플릿 문장 탓에 응집도 중앙값 0.90), 실제 민원은 중앙값이
+# 0.79~0.82(포항·국민신문고)라 후보가 거의 다 빠져 M3에서 끔. 실제 평가셋 라벨이 생기면 다시 정한다
+min_cohesion = 0.0
 # UMAP 차원 축소(이 건수 미만이면 축소 없이 바로 군집화)
 umap_min_records = 15
 umap_neighbors = 15

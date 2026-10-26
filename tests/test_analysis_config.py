@@ -12,7 +12,7 @@ def test_loads_repository_config() -> None:
     assert config.assignment.threshold == 0.80
     assert config.discovery.candidate_min_size == 5
     assert config.spike.ratio == 1.5
-    assert config.discovery.min_cohesion == 0.88
+    assert config.discovery.min_cohesion == 0.0
 
 
 def test_missing_values_use_defaults(tmp_path: Path) -> None:
