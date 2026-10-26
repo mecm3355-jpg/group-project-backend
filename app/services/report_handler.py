@@ -3,6 +3,7 @@
 원본 데이터는 보내지 않고, 최신 분석(품질 진단·통계)과 최신 정제 결과의 요약만
 LLM(deep 배포)에 보낸다.
 요약도 마스킹한 뒤 보내며, LLM 어댑터가 전송 직전에 개인정보를 한 번 더 검사한다.
+LLM 연결 정보가 없으면 같은 형식의 규칙 리포트를 만든다(rule_report).
 """
 
 import json
@@ -17,8 +18,9 @@ from app.schemas.file import FileDocument
 from app.schemas.report import AiReport
 from app.schemas.result import ResultDocument
 from app.services.job_runner import JobContext, JobHandler
-from app.services.llm import LlmClient, create_llm_client
+from app.services.llm import LlmClient, create_llm_client, llm_configured
 from app.services.masking import mask_text
+from app.services.rule_report import build_rule_report
 
 PROMPT_VERSION = "file-report@2"
 
@@ -44,7 +46,8 @@ SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이�
 - analysis.distributions의 출처·지역·기존분류·처리기관·월별 분포로 출처 간 비교를 하라.
 """
 
-LlmFactory = Callable[[Settings], LlmClient]
+# 설정으로 LLM 호출기를 만든다. 연결 정보가 없으면 None(규칙 리포트)
+LlmFactory = Callable[[Settings], LlmClient | None]
 
 
 def _summary_of(result: ResultDocument) -> dict[str, JsonValue]:
@@ -117,12 +120,15 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
         llm = llm_factory(ctx.settings)
 
         await ctx.report("ai_summary", 20)
-        report_body = await llm.generate(
-            prompt_version=PROMPT_VERSION,
-            system=SYSTEM_PROMPT,
-            masked_input=masked_input,
-            response_model=AiReport,
-        )
+        if llm is None:
+            report_body = build_rule_report(analysis, cleaning)
+        else:
+            report_body = await llm.generate(
+                prompt_version=PROMPT_VERSION,
+                system=SYSTEM_PROMPT,
+                masked_input=masked_input,
+                response_model=AiReport,
+            )
 
         await ctx.report("saving", 90)
         await results.insert(
@@ -137,8 +143,10 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
                         "analysisVersion": analysis.version,
                         "cleaningVersion": cleaning.version if cleaning else None,
                     },
-                    "promptVersion": PROMPT_VERSION,
-                    "usage": llm.usage.to_record(),
+                    # llm: AI 리포트, rule: LLM 없이 규칙으로 쓴 리포트
+                    "method": "rule" if llm is None else "llm",
+                    "promptVersion": None if llm is None else PROMPT_VERSION,
+                    "usage": None if llm is None else llm.usage.to_record(),
                 },
             )
         )
@@ -146,13 +154,13 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
     return report
 
 
-def default_llm(settings: Settings) -> LlmClient:
-    """리포트에 쓰는 기본 LLM: 깊은 추론용 deep 배포(예: gpt-5.6-sol-1).
+def default_llm(settings: Settings) -> LlmClient | None:
+    """리포트에 쓰는 기본 LLM: 깊은 추론용 deep 배포(예: gpt-5.6-sol-1). 연결 정보가 없으면 None.
 
     파라미터:
         settings: 앱 설정
     """
-    return create_llm_client(settings, "deep")
+    return create_llm_client(settings, "deep") if llm_configured(settings, "deep") else None
 
 
 report = make_report_handler(default_llm)

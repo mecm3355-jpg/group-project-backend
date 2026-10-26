@@ -220,14 +220,28 @@ def test_report_flow(llm_client: TestClient) -> None:
 
 
 @requires_db
-def test_report_requires_llm_configuration(db_client: TestClient) -> None:
+def test_report_without_llm_uses_rules(db_client: TestClient) -> None:
+    # 테스트 설정에는 LLM 연결 정보가 없다 → 규칙 리포트
     file_id = upload(db_client, "people.csv", CSV)
     run_worker(db_client)
 
     res = db_client.post(f"/api/v1/files/{file_id}/report")
+    assert res.status_code == 202, res.text
+    run_worker(db_client)
 
-    assert res.status_code == 503
-    assert res.json()["error"]["code"] == "LLM_NOT_CONFIGURED"
+    job = db_client.get(f"/api/v1/jobs/{res.json()['data']['jobId']}").json()["data"]
+    assert job["status"] == "completed", job
+    [item] = db_client.get(f"/api/v1/files/{file_id}/versions", params={"type": "report"}).json()[
+        "data"
+    ]["items"]
+    ai = item["ai"]
+    assert (ai["method"], ai["promptVersion"], ai["usage"]) == ("rule", None, None)
+    report = ai["report"]
+    assert "3행 3열" in report["summary"]
+    assert {i["severity"] for i in report["qualityIssues"]} <= {"high", "medium", "low"}
+    actions = [r["action"] for r in report["cleaningRecommendations"]]
+    assert "remove_duplicates" in actions  # 진단의 중복 행 → 정제 규칙 추천과 같은 권고
+    assert "LLM 없이" in report["caveats"][0]
 
 
 @requires_db

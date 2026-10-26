@@ -24,7 +24,8 @@ from app.schemas.dataset import FieldConstants, FieldMapping
 from app.schemas.job import JobStatus
 from app.schemas.result import QualityResult, ResultDocument
 
-AttributeMethod = Literal["rule", "llm"]
+# auto: LLM(fast 배포) 연결 정보가 있으면 llm, 없으면 rule
+AttributeMethod = Literal["auto", "rule", "llm"]
 
 
 class ComplaintAnalysisRequest(ApiModel):
@@ -40,8 +41,9 @@ class ComplaintAnalysisRequest(ApiModel):
     mapping: FieldMapping = Field(default_factory=FieldMapping)
     constants: FieldConstants = Field(default_factory=FieldConstants)
     split_rule: str | None = Field(default=None, max_length=50)
-    # 속성 추출 방식. llm은 마스킹본을 fast 배포로 보낸다(기본, 사용자 결정 2026-10-26)
-    attribute_method: AttributeMethod = "llm"
+    # 속성 추출 방식. llm은 마스킹본을 fast 배포로 보낸다. 기본 auto는 LLM이 설정돼 있으면
+    # llm(사용자 결정 2026-10-26), 없으면 rule로 분석한다(LLM 없이도 동작, 2026-10-26)
+    attribute_method: AttributeMethod = "auto"
 
 
 class AnalysisStartResult(ApiModel):

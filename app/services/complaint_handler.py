@@ -18,6 +18,7 @@ from bson import ObjectId
 from pydantic import JsonValue
 
 from app.core.analysis_config import load_analysis_config
+from app.core.config import Settings
 from app.core.errors import AppError
 from app.processors.splitter import load_split_rules
 from app.repositories.candidates import CandidateRepository
@@ -123,18 +124,30 @@ def _reuse_suggestion(
     return NameSuggestion(best.suggested_name, best.suggested_definition, best.suggested_group)
 
 
+def resolve_method(request: ComplaintAnalysisRequest, settings: Settings) -> str:
+    """실제로 쓸 속성 추출 방식(auto는 fast 배포 연결 정보가 있으면 llm, 없으면 rule).
+
+    파라미터:
+        request: 분석 요청
+        settings: 앱 설정
+    """
+    if request.attribute_method == "auto":
+        return "llm" if llm_configured(settings, "fast") else "rule"
+    return request.attribute_method
+
+
 async def _attributes(
-    records: list[ComplaintRecord], request: ComplaintAnalysisRequest, ctx: JobContext
+    records: list[ComplaintRecord], method: str, ctx: JobContext
 ) -> tuple[list[Attributes], set[str], LlmClient | None]:
     """속성 6종을 뽑는다. LLM 방식에서 실패·누락된 민원은 규칙으로 대신하고 불확실로 표시한다.
 
     파라미터:
         records: 마스킹된 민원
-        request: 분석 요청(속성 방식)
+        method: llm 또는 rule(resolve_method 결과)
         ctx: 작업 실행 정보
     """
     by_rule = {r.record_id: extract_by_rules(r) for r in records}
-    if request.attribute_method == "rule":
+    if method == "rule":
         return [by_rule[r.record_id] for r in records], set(), None
     client = create_llm_client(ctx.settings, "fast")
     extraction = await extract_by_llm(records, client)
@@ -219,7 +232,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
     vectors = await asyncio.to_thread(embedder.embed, [r.text for r in records])
 
     await ctx.report("attributes", 45)
-    attributes, uncertain, fast_client = await _attributes(records, request, ctx)
+    method = resolve_method(request, ctx.settings)
+    attributes, uncertain, fast_client = await _attributes(records, method, ctx)
 
     await ctx.report("assigning", 55)
     version = await categories_repo.latest_version()
@@ -315,7 +329,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
     )
     deep_client = (
         create_llm_client(ctx.settings, "deep")
-        if request.attribute_method == "llm" and llm_configured(ctx.settings, "deep")
+        if method == "llm" and llm_configured(ctx.settings, "deep")
         else None
     )
     text_of = {str(c.id): c.content_masked for c in pool}
@@ -388,7 +402,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
         "poolSize": len(pool),
         "taxonomyVersion": version,
         "period": {"from": periods[0], "to": periods[-1]},
-        "attributeMethod": request.attribute_method,
+        "attributeMethod": method,
         "issuesCreated": len(grouped.created),
         "issuesUpdated": len(grouped.updated),
         "maskedPii": dict(pii),

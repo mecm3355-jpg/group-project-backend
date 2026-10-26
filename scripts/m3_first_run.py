@@ -86,7 +86,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--samples", type=Path, default=ROOT / "샘플데이타")
     parser.add_argument("--out", type=Path, default=ROOT / "reports" / "m3")
-    parser.add_argument("--attribute-method", choices=["llm", "rule"], default="llm")
+    parser.add_argument("--attribute-method", choices=["auto", "llm", "rule"], default="auto")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     started = time.time()

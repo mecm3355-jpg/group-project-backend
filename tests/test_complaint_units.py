@@ -275,3 +275,23 @@ def test_overlapping_candidate_reuses_previous_name() -> None:
 
     assert same is not None and (same.name, same.group) == ("가로등 고장", "안전·조명")
     assert different is None
+
+
+def test_auto_method_uses_llm_only_when_configured(tmp_path: Path) -> None:
+    from pydantic import SecretStr
+
+    from app.core.config import Settings
+    from app.services.complaint_handler import resolve_method
+
+    plain = Settings(_env_file=None, mongodb_uri="mongodb://unused")
+    with_llm = plain.model_copy(
+        update={
+            "azure_openai_endpoint": "https://example.openai.azure.com/openai/v1",
+            "azure_openai_api_key": SecretStr("test-key"),
+            "azure_openai_deployment_fast": "fast-deployment",
+        }
+    )
+
+    assert resolve_method(ComplaintAnalysisRequest(), plain) == "rule"
+    assert resolve_method(ComplaintAnalysisRequest(), with_llm) == "llm"
+    assert resolve_method(ComplaintAnalysisRequest(attribute_method="rule"), with_llm) == "rule"

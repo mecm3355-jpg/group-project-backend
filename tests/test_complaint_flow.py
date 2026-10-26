@@ -218,9 +218,16 @@ def test_analysis_request_is_validated(db_client: TestClient) -> None:
         f"/api/v1/files/{file_id}/analysis", json={"type": "complaint", "attributeMethod": "rule"}
     )
     assert no_mapping.json()["error"]["code"] == "MAPPING_REQUIRED"
-    # 기본 속성 방식은 LLM이고, 테스트 설정에는 LLM 연결 정보가 없다
-    llm = db_client.post(f"/api/v1/files/{file_id}/analysis", json={"mapping": MAPPING})
+    # 테스트 설정에는 LLM 연결 정보가 없다: llm을 명시하면 거절, 기본(auto)은 규칙으로 접수
+    llm = db_client.post(
+        f"/api/v1/files/{file_id}/analysis", json={"mapping": MAPPING, "attributeMethod": "llm"}
+    )
     assert (llm.status_code, llm.json()["error"]["code"]) == (503, "LLM_NOT_CONFIGURED")
+    auto = db_client.post(f"/api/v1/files/{file_id}/analysis", json={"mapping": MAPPING})
+    assert auto.status_code == 202, auto.text
+    run_worker(db_client)
+    summary = db_client.get(f"/api/v1/files/{file_id}/analysis").json()["data"]["analysis"]
+    assert summary["complaint"]["attributeMethod"] == "rule"
     bad_rule = db_client.post(
         f"/api/v1/files/{file_id}/analysis",
         json={"mapping": MAPPING, "splitRule": "none", "attributeMethod": "rule"},
