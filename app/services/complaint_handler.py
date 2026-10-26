@@ -17,7 +17,7 @@ import numpy as np
 from bson import ObjectId
 from pydantic import JsonValue
 
-from app.core.analysis_config import load_analysis_config
+from app.core.analysis_config import AttributeConfig, load_analysis_config
 from app.core.config import Settings
 from app.core.errors import AppError
 from app.processors.splitter import load_split_rules
@@ -41,7 +41,7 @@ from app.schemas.complaint_api import ComplaintAnalysisRequest
 from app.schemas.result import QualityIssue, QualityResult, ResultDocument
 from app.services.artifacts import job_params_key
 from app.services.assignment import assign
-from app.services.attributes import extract_by_llm, extract_by_rules
+from app.services.attributes import extract_by_llm, extract_by_rules, refine_with_prototypes
 from app.services.complaint_extraction import RawComplaint, extract_complaints
 from app.services.complaint_vectors import load_vectors, save_vectors
 from app.services.discovery import discover
@@ -137,16 +137,29 @@ def resolve_method(request: ComplaintAnalysisRequest, settings: Settings) -> str
 
 
 async def _attributes(
-    records: list[ComplaintRecord], method: str, ctx: JobContext
+    records: list[ComplaintRecord],
+    method: str,
+    ctx: JobContext,
+    vectors: Vectors,
+    embedder: Embedder,
+    config: AttributeConfig,
 ) -> tuple[list[Attributes], set[str], LlmClient | None]:
     """속성 6종을 뽑는다. LLM 방식에서 실패·누락된 민원은 규칙으로 대신하고 불확실로 표시한다.
+
+    규칙 속성은 비어 있는 긴급도·요청 유형을 임베딩 원형 분류로 보강한다.
 
     파라미터:
         records: 마스킹된 민원
         method: llm 또는 rule(resolve_method 결과)
         ctx: 작업 실행 정보
+        vectors: records의 정규화된 임베딩
+        embedder: 임베더(원형 문장용)
+        config: 원형 분류 기준
     """
-    by_rule = {r.record_id: extract_by_rules(r) for r in records}
+    rules = refine_with_prototypes(
+        [extract_by_rules(r) for r in records], vectors, embedder, config
+    )
+    by_rule = {a.record_id: a for a in rules}
     if method == "rule":
         return [by_rule[r.record_id] for r in records], set(), None
     client = create_llm_client(ctx.settings, "fast")
@@ -233,7 +246,9 @@ async def analyze_complaints(ctx: JobContext) -> None:
 
     await ctx.report("attributes", 45)
     method = resolve_method(request, ctx.settings)
-    attributes, uncertain, fast_client = await _attributes(records, method, ctx)
+    attributes, uncertain, fast_client = await _attributes(
+        records, method, ctx, vectors, embedder, config.attributes
+    )
 
     await ctx.report("assigning", 55)
     version = await categories_repo.latest_version()

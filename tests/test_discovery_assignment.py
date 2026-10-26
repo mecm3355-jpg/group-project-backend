@@ -192,3 +192,12 @@ def test_noun_tokens_skip_mask_tags_and_stopwords() -> None:
     assert "놀이터" in tokens
     assert "전화" not in tokens
     assert "민원" not in tokens
+
+
+def test_noun_tokens_join_attached_nouns() -> None:
+    assert noun_tokens("버스정류장 안내판 고장, 점자블록이 깨짐") == [
+        "버스정류장",
+        "안내판",
+        "고장",
+        "점자블록",
+    ]

@@ -1,12 +1,14 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pydantic import BaseModel
 
 from app.core.errors import AppError
 from app.schemas.complaint_analysis import ComplaintRecord
 from app.services.attributes import extract_by_llm, extract_by_rules, extract_place
+from app.services.embedding import normalize
 from app.services.llm import ChatReply, LlmClient
 from app.services.storage import LocalStorage
 
@@ -36,7 +38,7 @@ def test_rule_extraction_finds_six_attributes() -> None:
     assert attrs.repeat == "재신고"
     assert attrs.request_type == "수리·조치"
     assert attrs.affected == "어린이"
-    assert attrs.analyzer == "rule-dict@1"
+    assert attrs.analyzer == "rule-dict@2"
 
 
 def test_rule_extraction_leaves_unknown_empty() -> None:
@@ -133,3 +135,45 @@ async def test_llm_extraction_refuses_unmasked_text(tmp_path: Path) -> None:
 
     assert backend.calls == 0
     assert result.errors == ["R1: PII_DETECTED"]
+
+
+def test_specific_facility_is_preferred_over_place() -> None:
+    attrs = extract_by_rules(record("산책로 운동기구가 고장 났습니다"))
+    only_place = extract_by_rules(record("산책로가 패여 있습니다"))
+
+    assert (attrs.facility, only_place.facility) == ("운동기구", "산책로")
+
+
+class AxisEmbedder:
+    """낱말이 든 축에 1을 두는 가짜 임베더(원형 분류 테스트용)."""
+
+    model_name = "fake-axis"
+    WORDS = ("위험", "고장", "불편", "문의", "고쳐", "단속", "설치", "궁금", "불친절")
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        """본문마다 낱말 축 벡터를 만든다.
+
+        파라미터:
+            texts: 본문 목록
+        """
+        rows = [[1.0 if w in t else 0.0 for w in self.WORDS] + [0.01] for t in texts]
+        return normalize(np.asarray(rows))
+
+
+def test_prototypes_fill_only_empty_and_confident_values() -> None:
+    from app.core.analysis_config import AttributeConfig
+    from app.services.attributes import refine_with_prototypes
+
+    embedder = AxisEmbedder()
+    texts = ["위험 위험", "아무 낱말 없음", "가로등 사고 위험"]  # 셋째는 규칙이 이미 긴급
+    records = [record(t, f"R{i}") for i, t in enumerate(texts)]
+    rules = [extract_by_rules(r) for r in records]
+    rules[0] = rules[0].model_copy(update={"urgency": None})
+
+    refined = refine_with_prototypes(
+        rules, embedder.embed(texts), embedder, AttributeConfig(prototype_min_similarity=0.3)
+    )
+
+    assert refined[0].urgency == "긴급" and refined[0].analyzer.endswith("+proto@1")
+    assert refined[1].urgency is None  # 어느 원형과도 비슷하지 않으면 비워 둔다
+    assert refined[2] == rules[2]

@@ -21,6 +21,7 @@ from docx.text.paragraph import Paragraph
 from PIL import Image, UnidentifiedImageError
 
 from app.core.errors import AppError
+from app.processors.korean import fix_spacing
 from app.processors.ocr import OcrEngine
 
 DOCUMENT_EXTENSIONS = {"docx", "pdf"}
@@ -45,6 +46,8 @@ class OcrOptions:
     engine: OcrEngine
     dpi: int = 300
     low_confidence: float = 0.6
+    # OCR 줄의 띄어쓰기를 다시 잡는다(Tesseract 한국어는 글자 사이에 공백을 자주 넣는다)
+    fix_spacing: bool = True
 
 
 @dataclass
@@ -101,7 +104,11 @@ def _ocr_entries(
         result: 통계를 쌓을 문서 객체
     """
     entries = [
-        DocLine(text=line.text, page=page, confidence=line.confidence)
+        DocLine(
+            text=fix_spacing(line.text) if options.fix_spacing else line.text,
+            page=page,
+            confidence=line.confidence,
+        )
         for line in options.engine.recognize(image)
         if line.text.strip()
     ]

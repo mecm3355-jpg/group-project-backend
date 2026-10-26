@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.processors.document import OcrOptions
-from app.processors.ocr import TesseractEngine, find_tesseract
+from app.processors.ocr import CachedOcrEngine, OcrEngine, TesseractEngine, find_tesseract
 
 
 @lru_cache(maxsize=4)
@@ -36,6 +36,7 @@ def ocr_options(settings: Settings) -> OcrOptions | None:
     )
     if engine is None:
         return None
+    cached: OcrEngine = CachedOcrEngine(engine, (settings.storage_root / "ocr-cache").resolve())
     return OcrOptions(
-        engine=engine, dpi=settings.ocr_dpi, low_confidence=settings.ocr_low_confidence
+        engine=cached, dpi=settings.ocr_dpi, low_confidence=settings.ocr_low_confidence
     )

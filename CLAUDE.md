@@ -10,6 +10,7 @@ Python + FastAPI(Modular Monolith) + MongoDB Atlas
 - 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"` (민원 분석 임베딩까지: `".[dev,analysis]"`, torch·bge-m3 약 2.3GB)
 - OCR(스캔 PDF·이미지): `winget install UB-Mannheim.TesseractOCR` + 한국어 모델 `kor.traineddata`(tessdata_best)를 받은 폴더를 `.env`의 `TESSERACT_TESSDATA_DIR`에 지정. 없으면 스캔 PDF는 "OCR 필요"로만 진단, 테스트는 OCR을 끄고 돈다
 - OCR 정확도 측정: `python scripts/ocr_eval.py [--languages kor+eng]` — 국민신문고 PDF를 교정본 CSV와 대조해 `reports/m3/`에 기록
+- 품질 측정(개선 전후 비교): `python scripts/quality_bench.py --label "설명" [--labels 채운라벨링.csv]` — OCR·속성·시뮬레이션 지표를 `reports/quality/latest.md`에 직전 실행과 비교(외부 호출 없음)
 - M3 첫 분석(실데이터 → 후보 목록): `python scripts/m3_first_run.py [--attribute-method rule]` — 임시 MongoDB로 포항 CSV·국민신문고 PDF를 API·워커 그대로 분석해 `reports/m3/first-run.md` 작성
 - M2 시뮬레이션: `python scripts/m2_simulation.py [--sweep] [--llm]` — `샘플데이타/`를 읽어 `reports/m2/`에 리포트 작성(둘 다 git 제외, `--llm`은 마스킹본을 Azure로 전송)
 - 실행(API): `uvicorn app.main:create_app --factory --reload`

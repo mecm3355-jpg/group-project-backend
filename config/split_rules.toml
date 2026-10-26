@@ -28,3 +28,8 @@ title = "제목"
 agency = "처리기관"
 registered = "등록일"
 views = "조회수"
+
+[sinmungo.field_types]
+number = "digits"
+registered = "date"
+views = "digits"

@@ -21,6 +21,8 @@ from app.processors.document import DocLine
 DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "split_rules.toml"
 # 표지 뒤 값 앞에 OCR이 붙이는 구분 기호(예: "처리 기관 _ 국토교통부", "등록일 : 2026-10-24")
 VALUE_PREFIX = re.compile(r"^[\s_:：ㆍ·^|.\-]+")
+# 날짜: 연(4~5자리) 구분 월 구분 일
+DATE_PARTS = re.compile(r"(\d{4,5})\D{1,2}(\d{1,2})\D{1,2}(\d{1,2})")
 
 
 class FormRule(BaseModel):
@@ -36,6 +38,8 @@ class FormRule(BaseModel):
     ignore_patterns: list[str] = []
     # 접수일로 쓸 필드(complaints.receivedAt). 없으면 접수일 없음
     received_field: str | None = None
+    # 필드 형식: date(YYYY-MM-DD로 맞춤), digits(숫자만 남김). OCR 오인식을 바로잡는다
+    field_types: dict[str, Literal["date", "digits"]] = {}
 
 
 @dataclass
@@ -76,6 +80,29 @@ def load_split_rules(path: Path = DEFAULT_RULES_PATH) -> dict[str, FormRule]:
         raise AppError(
             "INVALID_SPLIT_RULES", f"민원 분리 규칙 파일을 읽을 수 없습니다: {exc}", 500
         ) from exc
+
+
+def normalize_field(value: str, kind: Literal["date", "digits"]) -> str:
+    """OCR로 읽은 필드 값을 형식에 맞춘다. 맞출 수 없으면 원래 값을 둔다.
+
+    - digits: 숫자만 남긴다("4051.3" → "40513", OCR이 숫자 사이에 끼운 기호 제거)
+    - date: 연·월·일 숫자를 찾아 YYYY-MM-DD로. 연도가 다섯 자리면 앞 네 자리를 쓴다
+      ("20264-10-24": 하이픈을 숫자로 읽은 경우 → 2026-10-24)
+
+    파라미터:
+        value: 필드 값
+        kind: date 또는 digits
+    """
+    if kind == "digits":
+        digits = re.sub(r"\D", "", value)
+        return digits or value
+    match = DATE_PARTS.search(value.replace(" ", ""))
+    if not match:
+        return value
+    year, month, day = match.group(1)[:4], int(match.group(2)), int(match.group(3))
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return value
+    return f"{year}-{month:02d}-{day:02d}"
 
 
 def _strip_label(text: str, label: str) -> str | None:
@@ -140,4 +167,8 @@ def split_by_form(lines: Iterable[DocLine], rule: FormRule) -> list[FormRecord]:
         if line.confidence is not None:
             current.confidences.append(line.confidence)
         last_key = key
+    for record in records:
+        for key, kind in rule.field_types.items():
+            if key in record.fields:
+                record.fields[key] = normalize_field(record.fields[key], kind)
     return [r for r in records if r.fields.get(rule.content_field)]

@@ -8,9 +8,8 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Sequence
-from functools import lru_cache
 
-from kiwipiepy import Kiwi
+from app.processors.korean import kiwi
 
 Tokenizer = Callable[[str], list[str]]
 
@@ -26,26 +25,25 @@ STOPWORDS = {
 MASK_TAG = re.compile(r"\[[^\]]{1,10}\]")
 
 
-@lru_cache(maxsize=1)
-def _kiwi() -> Kiwi:
-    """Kiwi 분석기를 한 번만 만든다(모델 로딩에 1~2초).
-
-    파라미터: 없음
-    """
-    return Kiwi()
-
-
 def noun_tokens(text: str) -> list[str]:
     """본문에서 두 글자 이상 명사를 뽑는다. 마스킹 표지([전화] 등)는 뺀다.
+
+    띄어쓰기 없이 붙은 명사는 하나로 묶는다(점자+블록 → 점자블록, 버스+정류장 → 버스정류장).
 
     파라미터:
         text: 마스킹된 본문
     """
-    return [
-        token.form
-        for token in _kiwi().tokenize(MASK_TAG.sub(" ", text))
-        if token.tag in NOUN_TAGS and len(token.form) >= 2 and token.form not in STOPWORDS
-    ]
+    nouns: list[tuple[int, int, str]] = []  # (시작, 끝, 낱말)
+    for token in kiwi().tokenize(MASK_TAG.sub(" ", text)):
+        if token.tag not in NOUN_TAGS:
+            continue
+        start, end = token.start, token.start + token.len
+        if nouns and nouns[-1][1] == start and token.tag != "SL":
+            prev_start, _, prev_form = nouns[-1]
+            nouns[-1] = (prev_start, end, prev_form + token.form)
+        else:
+            nouns.append((start, end, token.form))
+    return [form for _, _, form in nouns if len(form) >= 2 and form not in STOPWORDS]
 
 
 def class_tfidf(

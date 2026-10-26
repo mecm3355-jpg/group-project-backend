@@ -26,6 +26,13 @@ random_state = 42
 keyword_count = 10
 exemplar_count = 5
 
+[attributes]
+# 규칙에 걸리는 낱말이 없을 때, 원형 문장(app/services/attributes.py PROTOTYPES)과의 bge-m3 유사도로
+# 긴급도·요청 유형을 채운다. 유사도 이 값 이상 + 1·2위 차이 margin 이상일 때만(근거 약하면 비움)
+# 측정(2026-10-26, 포항 LLM 일치율): 긴급도 0.32→0.49, 요청 유형 0.41→0.50
+prototype_min_similarity = 0.45
+prototype_margin = 0.01
+
 [spike]
 # 이번 달 건수가 직전 baseline_months개월 평균의 ratio배 이상이고 min_count건 이상이면 급증
 # (PRD 초기값 2.0으로는 김천 10월 급증(1.57배)을 놓쳐 1.5로 낮춤)

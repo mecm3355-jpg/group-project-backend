@@ -39,6 +39,14 @@ class DiscoveryConfig(_Section):
     exemplar_count: int = Field(default=5, ge=1)
 
 
+class AttributeConfig(_Section):
+    """규칙 속성 보강(임베딩 원형 분류) 기준. 규칙에 걸리는 낱말이 없을 때만 쓴다."""
+
+    # 원형 문장 중심과의 유사도가 이 값 이상이고 1·2위 차이가 margin 이상일 때만 채운다
+    prototype_min_similarity: float = Field(default=0.45, ge=-1, le=1)
+    prototype_margin: float = Field(default=0.01, ge=0)
+
+
 class SpikeConfig(_Section):
     """급증 판정 기준(PRD 8.2, 9장 통계·급증)."""
 
@@ -68,6 +76,7 @@ class AnalysisConfig(_Section):
 
     assignment: AssignmentConfig = AssignmentConfig()
     discovery: DiscoveryConfig = DiscoveryConfig()
+    attributes: AttributeConfig = AttributeConfig()
     spike: SpikeConfig = SpikeConfig()
     issue: IssueConfig = IssueConfig()
     taxonomy: TaxonomyConfig = TaxonomyConfig()

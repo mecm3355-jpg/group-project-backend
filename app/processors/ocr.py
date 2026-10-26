@@ -5,7 +5,9 @@ Tesseract를 명령줄로 직접 부르고 TSV 출력에서 단어별 신뢰도�
 """
 
 import csv
+import hashlib
 import io
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -162,3 +164,48 @@ class TesseractEngine:
             message = done.stderr.decode("utf-8", errors="replace").strip()[:200]
             raise AppError("OCR_FAILED", f"OCR 실행에 실패했습니다: {message}", 500)
         return parse_tsv(done.stdout.decode("utf-8", errors="replace"))
+
+
+class CachedOcrEngine:
+    """같은 이미지의 OCR 결과를 파일에 저장해 두고 다시 읽지 않는다.
+
+    업로드 진단과 민원 분석이 같은 스캔본을 두 번 OCR하는 것을 막는다. 이미지(PNG) 해시와
+    엔진 이름으로 찾으므로, 엔진·언어를 바꾸면 새로 읽는다.
+    """
+
+    def __init__(self, inner: OcrEngine, cache_dir: Path) -> None:
+        """캐시를 붙인 엔진을 만든다.
+
+        파라미터:
+            inner: 실제 OCR 엔진
+            cache_dir: 결과(JSON)를 둘 폴더
+        """
+        self.name = inner.name
+        self._inner = inner
+        self._dir = cache_dir
+
+    def recognize(self, image: Image.Image) -> list[OcrLine]:
+        """캐시에 있으면 그 결과를, 없으면 OCR한 뒤 저장한 결과를 돌려준다.
+
+        파라미터:
+            image: 읽을 이미지
+        """
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        digest = hashlib.sha256(self.name.encode() + buffer.getvalue()).hexdigest()
+        path = self._dir / digest[:2] / f"{digest}.json"
+        if path.is_file():
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8"))
+                return [OcrLine(str(r["text"]), float(r["confidence"])) for r in rows]
+            except (ValueError, KeyError, TypeError):
+                pass  # 깨진 캐시는 다시 읽는다
+        lines = self._inner.recognize(image)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                [{"text": x.text, "confidence": x.confidence} for x in lines], ensure_ascii=False
+            ),
+            encoding="utf-8",
+        )
+        return lines

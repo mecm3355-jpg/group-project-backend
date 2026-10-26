@@ -185,3 +185,21 @@ def test_real_tesseract_reads_korean() -> None:
 
     assert "".join(line.text for line in lines).replace(" ", "") == "가로등고장신고"
     assert all(0 < line.confidence <= 1 for line in lines)
+
+
+def test_ocr_spacing_is_fixed_and_results_are_cached(tmp_path: Path) -> None:
+    from app.processors.ocr import CachedOcrEngine
+
+    engine = FakeEngine([[OcrLine("정 보 공개 요 청 에 관한 건", 0.9)]])
+    cached = CachedOcrEngine(engine, tmp_path / "cache")
+    image = Image.new("RGB", (40, 20), "white")
+    path = tmp_path / "photo"
+    image.save(path, format="PNG")
+
+    with open_document(path, "png", OcrOptions(cached, dpi=72)) as document:
+        [entry] = list(document.entries)
+    again = cached.recognize(image)
+
+    assert entry.text == "정보 공개 요청에 관한 건"
+    assert again == [OcrLine("정 보 공개 요 청 에 관한 건", 0.9)]  # 캐시는 원래 OCR 결과
+    assert engine.calls == 1

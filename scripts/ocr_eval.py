@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.core.config import get_settings  # noqa: E402
-from app.processors.document import open_document  # noqa: E402
+from app.processors.document import OcrOptions, open_document  # noqa: E402
 from app.processors.splitter import FormRecord, load_split_rules, split_by_form  # noqa: E402
 from app.services.ocr_setup import ocr_options  # noqa: E402
 
@@ -82,27 +82,17 @@ def align(truth: list[dict[str, str]], found: list[FormRecord]) -> list[tuple[in
     return pairs
 
 
-def main() -> None:
-    """국민신문고 PDF를 OCR해 교정본과 비교한다.
+def evaluate(samples: Path, options: OcrOptions) -> tuple[dict[str, object], list[list[str]]]:
+    """국민신문고 PDF를 OCR·분리해 교정본과 비교한 지표와 틀린 제목 목록을 돌려준다.
 
-    파라미터: 없음(명령줄 인자는 --help 참고)
+    파라미터:
+        samples: 샘플 폴더(국민신문고*.pdf, 국민신문고_OCR_민원제목.csv)
+        options: OCR 설정
     """
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--samples", type=Path, default=ROOT / "샘플데이타")
-    parser.add_argument("--out", type=Path, default=ROOT / "reports" / "m3")
-    parser.add_argument("--languages", help="OCR 언어 모델(기본: OCR_LANGUAGES 설정, 예: kor+eng)")
-    args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    settings = get_settings()
-    if args.languages:
-        settings = settings.model_copy(update={"ocr_languages": args.languages})
-    options = ocr_options(settings)
-    if options is None:
-        raise SystemExit("Tesseract 또는 한국어 모델이 없습니다(TESSERACT_* 설정 확인).")
     rule = load_split_rules()["sinmungo"]
 
     truth_by_file: dict[str, list[dict[str, str]]] = defaultdict(list)
-    with (args.samples / "국민신문고_OCR_민원제목.csv").open(encoding="utf-8-sig") as f:
+    with (samples / "국민신문고_OCR_민원제목.csv").open(encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             truth_by_file[row["원본파일"]].append(row)
 
@@ -111,7 +101,7 @@ def main() -> None:
     confidence_rows: list[tuple[float, bool]] = []
     errors: list[list[str]] = []
     per_file: dict[str, dict[str, int]] = {}
-    for pdf in sorted(args.samples.glob("국민신문고*.pdf")):
+    for pdf in sorted(samples.glob("국민신문고*.pdf")):
         with open_document(pdf, "pdf", options) as document:
             found = split_by_form(document.entries, rule)
         # 교정본은 번호 오름차순이고, PDF 목록은 1쪽부터 최신(번호가 큰) 순이다
@@ -171,6 +161,27 @@ def main() -> None:
         "reviewThresholds": review,
         "files": per_file,
     }
+    return result, errors
+
+
+def main() -> None:
+    """국민신문고 PDF를 OCR해 교정본과 비교한다.
+
+    파라미터: 없음(명령줄 인자는 --help 참고)
+    """
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--samples", type=Path, default=ROOT / "샘플데이타")
+    parser.add_argument("--out", type=Path, default=ROOT / "reports" / "m3")
+    parser.add_argument("--languages", help="OCR 언어 모델(기본: OCR_LANGUAGES 설정, 예: kor+eng)")
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+    settings = get_settings()
+    if args.languages:
+        settings = settings.model_copy(update={"ocr_languages": args.languages})
+    options = ocr_options(settings)
+    if options is None:
+        raise SystemExit("Tesseract 또는 한국어 모델이 없습니다(TESSERACT_* 설정 확인).")
+    result, errors = evaluate(args.samples, options)
     suffix = f"-{options.engine.name.split(':')[1]}"
     (args.out / f"ocr-eval{suffix}.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"

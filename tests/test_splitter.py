@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -94,3 +95,19 @@ def test_invalid_rules_file(tmp_path: Path) -> None:
     with pytest.raises(AppError) as info:
         load_split_rules(path)
     assert info.value.code == "INVALID_SPLIT_RULES"
+
+
+@pytest.mark.parametrize(
+    ("value", "kind", "expected"),
+    [
+        ("20264-10-24", "date", "2026-10-24"),  # 하이픈을 숫자로 읽음
+        ("2026.10.4", "date", "2026-10-04"),
+        ("2026-13-01", "date", "2026-13-01"),  # 맞출 수 없으면 그대로
+        ("4051.3", "digits", "40513"),
+        ("?", "digits", "?"),
+    ],
+)
+def test_normalize_field(value: str, kind: Literal["date", "digits"], expected: str) -> None:
+    from app.processors.splitter import normalize_field
+
+    assert normalize_field(value, kind) == expected

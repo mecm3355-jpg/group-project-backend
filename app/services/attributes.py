@@ -8,6 +8,9 @@ import re
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+import numpy as np
+
+from app.core.analysis_config import AttributeConfig
 from app.core.errors import AppError
 from app.schemas.complaint_analysis import (
     Affected,
@@ -18,11 +21,13 @@ from app.schemas.complaint_analysis import (
     RequestType,
     Urgency,
 )
+from app.services.embedding import Embedder, Vectors, normalize
 from app.services.llm import LlmClient
 
 T = TypeVar("T")
 
-RULE_ANALYZER = "rule-dict@1"
+RULE_ANALYZER = "rule-dict@2"
+PROTOTYPE_SUFFIX = "+proto@1"
 LLM_PROMPT_VERSION = "complaint-attributes@1"
 
 # 시설 사전: 본문 표현 → 표준 이름. 본문에서 가장 먼저 나온 시설을 대상 시설로 본다
@@ -42,7 +47,21 @@ FACILITY_SYNONYMS: dict[str, str] = {
     "표지판": "표지판", "안내판": "안내판", "전선": "전선", "충전시설": "충전시설",
     "징검다리": "징검다리", "교량": "교량", "배수문": "배수문", "도로": "도로", "인도": "인도",
     "보도": "인도", "산책로": "산책로", "자전거길": "자전거길",
+    # M3 보강(포항·가상민원에서 LLM이 찾았지만 사전에 없던 시설·물건)
+    "배수시설": "배수구", "덮개": "덮개", "뚜껑": "덮개", "담장": "담장",
+    "와이파이": "와이파이", "wifi": "와이파이", "안내문": "안내판", "그늘막": "그늘막",
+    "충전기": "충전시설", "콘센트": "콘센트", "자동문": "자동문", "냉방": "에어컨",
+    "배기구": "배기구", "바닥분수": "바닥분수", "분수": "바닥분수", "벌집": "벌집",
+    "쓰레기": "쓰레기", "폐기물": "쓰레기", "적치물": "적치물", "방치물": "적치물",
+    "빈집": "빈집", "폐가": "빈집", "잔디": "잔디", "나뭇가지": "가로수", "가로수": "가로수",
+    "수목": "가로수", "쉼터": "쉼터", "방지턱": "과속방지턱", "차선": "차선", "노면": "도로",
+    "고드름": "고드름", "수도": "수도", "수돗물": "수도", "장애인주차구역": "장애인주차구역",
+    "택시": "택시", "자전거": "자전거", "킥보드": "킥보드", "주차장": "주차장",
+    "수도꼭지": "수도", "손잡이": "난간", "울타리": "펜스",
 }  # fmt: skip
+# 장소에 가까운 시설. 본문에 다른 시설이 있으면 그쪽을 대상 시설로 본다
+# (예: "산책로 운동기구가 고장" → 운동기구)
+PLACE_LIKE_FACILITIES = {"도로", "인도", "산책로", "교량", "버스정류장", "자전거길", "주차장"}
 FACILITY_PATTERN = re.compile(
     "|".join(re.escape(word) for word in sorted(FACILITY_SYNONYMS, key=len, reverse=True)),
     re.IGNORECASE,
@@ -126,10 +145,11 @@ def extract_by_rules(record: ComplaintRecord) -> Attributes:
         record: 마스킹된 민원
     """
     text = record.text
-    facility = FACILITY_PATTERN.search(text)
+    found = [FACILITY_SYNONYMS[m.group(0).lower()] for m in FACILITY_PATTERN.finditer(text)]
+    specific = [f for f in found if f not in PLACE_LIKE_FACILITIES]
     return Attributes(
         record_id=record.record_id,
-        facility=FACILITY_SYNONYMS[facility.group(0).lower()] if facility else None,
+        facility=specific[0] if specific else found[0] if found else None,
         place=extract_place(text),
         urgency=_first_match(URGENCY_RULES, text),
         repeat="재신고" if REPEAT.search(text) else None,
@@ -204,3 +224,100 @@ async def extract_by_llm(
                 )
             )
     return result
+
+
+# 원형 문장: 값마다 그 값의 전형적인 민원 문장. 중심 벡터와의 유사도로 판정한다.
+# 문장을 고치면 PROTOTYPE_SUFFIX 버전을 올린다
+PROTOTYPES: dict[str, dict[str, list[str]]] = {
+    "urgency": {
+        "긴급": [
+            "사고가 날 뻔했습니다 매우 위험합니다",
+            "아이가 다칠 수 있어 위험합니다",
+            "넘어질 위험이 있어 빨리 조치가 필요합니다",
+            "화재나 감전이 걱정됩니다",
+        ],
+        "높음": [
+            "고장이 나서 사용할 수 없습니다",
+            "통행할 수 없을 정도입니다",
+            "생활에 큰 지장이 있습니다",
+            "물이 나오지 않아 곤란합니다",
+        ],
+        "보통": [
+            "조금 불편합니다",
+            "보기에 좋지 않습니다",
+            "냄새가 나서 불쾌합니다",
+            "지저분해서 정비가 필요합니다",
+        ],
+        "낮음": [
+            "건의드립니다",
+            "궁금한 점이 있어 문의합니다",
+            "이런 시설이 있으면 좋겠습니다",
+            "제도 개선을 제안합니다",
+        ],
+    },
+    "request_type": {
+        "수리·조치": [
+            "고장 난 시설을 고쳐 주세요",
+            "파손된 곳을 수리해 주세요",
+            "쓰레기를 치워 주세요",
+            "현장을 점검하고 조치해 주세요",
+        ],
+        "단속": [
+            "불법 주차를 단속해 주세요",
+            "무단투기를 단속해 주세요",
+            "위반 차량에 과태료를 부과해 주세요",
+        ],
+        "신설·개선": [
+            "가로등을 설치해 주세요",
+            "횡단보도를 새로 만들어 주세요",
+            "시설을 늘리고 개선해 주세요",
+            "CCTV를 추가로 설치해 주세요",
+        ],
+        "질의": [
+            "어떻게 해야 하는지 문의드립니다",
+            "법령 해석을 요청합니다",
+            "가능한지 알려 주세요",
+            "기준이 무엇인지 궁금합니다",
+        ],
+        "불만": ["직원이 불친절합니다", "처리가 늦어 불만입니다", "왜 아직도 해결이 안 됩니까"],
+    },
+}
+
+
+def refine_with_prototypes(
+    attributes: list[Attributes], vectors: Vectors, embedder: Embedder, config: AttributeConfig
+) -> list[Attributes]:
+    """규칙으로 비어 있는 긴급도·요청 유형을 원형 문장과의 임베딩 유사도로 채운다.
+
+    유사도가 기준 이상이고 1·2위 차이가 충분할 때만 채운다(근거가 약하면 비워 둔다).
+
+    파라미터:
+        attributes: 규칙 속성(vectors와 같은 순서)
+        vectors: 민원의 정규화된 임베딩
+        embedder: 원형 문장을 임베딩할 임베더(민원과 같은 모델)
+        config: 원형 분류 기준
+    """
+    if not attributes:
+        return attributes
+    updates: list[dict[str, str]] = [{} for _ in attributes]
+    for name, classes in PROTOTYPES.items():
+        labels = list(classes)
+        centroids = normalize(np.stack([embedder.embed(classes[c]).mean(axis=0) for c in labels]))
+        similarities = vectors @ centroids.T
+        order = np.argsort(-similarities, axis=1)
+        for index, attr in enumerate(attributes):
+            if getattr(attr, name) is not None:
+                continue
+            first, second = int(order[index, 0]), int(order[index, 1])
+            top = float(similarities[index, first])
+            if (
+                top >= config.prototype_min_similarity
+                and top - float(similarities[index, second]) >= config.prototype_margin
+            ):
+                updates[index][name] = labels[first]
+    return [
+        attr.model_copy(update={**update, "analyzer": attr.analyzer + PROTOTYPE_SUFFIX})
+        if update
+        else attr
+        for attr, update in zip(attributes, updates, strict=True)
+    ]
