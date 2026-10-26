@@ -7,12 +7,14 @@
 """
 
 import hashlib
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
+from app.core.config import Settings
 from app.core.errors import AppError
 
 Vectors = NDArray[np.float32]
@@ -129,3 +131,39 @@ class CachedEmbedder:
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
         return np.stack([found[i] for i in range(len(texts))]).astype(np.float32)
+
+
+_override: Embedder | None = None
+
+
+def set_embedder_override(embedder: Embedder | None) -> None:
+    """get_embedder가 돌려줄 임베더를 바꾼다(테스트에서 가짜 임베더를 쓸 때). None이면 되돌린다.
+
+    파라미터:
+        embedder: 대신 쓸 임베더
+    """
+    global _override
+    _override = embedder
+
+
+@lru_cache(maxsize=2)
+def _cached_embedder(model_name: str, cache_dir: Path) -> Embedder:
+    """모델을 한 번만 불러 캐시를 붙인다(bge-m3는 불러오는 데 수 초, 메모리 2GB 남짓).
+
+    파라미터:
+        model_name: 임베딩 모델 이름
+        cache_dir: 벡터 캐시 폴더
+    """
+    return CachedEmbedder(SentenceTransformerEmbedder(model_name), cache_dir)
+
+
+def get_embedder(settings: Settings) -> Embedder:
+    """설정의 임베딩 모델(EMBEDDING_MODEL)로 캐시 붙은 임베더를 돌려준다.
+
+    파라미터:
+        settings: 앱 설정
+    """
+    if _override is not None:
+        return _override
+    cache_dir = settings.embedding_cache_dir or settings.storage_root / "embedding-cache"
+    return _cached_embedder(settings.embedding_model, cache_dir.resolve())

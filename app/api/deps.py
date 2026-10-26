@@ -4,10 +4,15 @@ from fastapi import Depends, Request
 
 from app.core.config import Settings
 from app.core.database import Mongo, get_mongo
+from app.repositories.candidates import CandidateRepository
+from app.repositories.categories import CategoryRepository
+from app.repositories.complaints import ComplaintRepository
 from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
+from app.repositories.reviews import ReviewRepository
 from app.services.cleaning_service import CleaningService
+from app.services.complaint_service import ComplaintService
 from app.services.dashboard_service import DashboardService
 from app.services.dataset_service import DatasetService
 from app.services.file_service import FileService
@@ -43,6 +48,8 @@ def get_file_service(
         ResultRepository(mongo.db),
         LocalStorage(settings.storage_root),
         settings,
+        ComplaintRepository(mongo.db),
+        ReviewRepository(mongo.db),
     )
 
 
@@ -116,6 +123,28 @@ def get_dataset_service(
         FileRepository(mongo.db),
         JobRepository(mongo.db),
         ResultRepository(mongo.db),
+        LocalStorage(settings.storage_root),
+        settings,
+    )
+
+
+def get_complaint_service(
+    mongo: Annotated[Mongo, Depends(get_mongo)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> ComplaintService:
+    """요청마다 민원 분석 서비스를 만든다.
+
+    파라미터:
+        mongo: Mongo 인스턴스
+        settings: 앱 설정
+    """
+    return ComplaintService(
+        FileRepository(mongo.db),
+        JobRepository(mongo.db),
+        ComplaintRepository(mongo.db),
+        CategoryRepository(mongo.db),
+        CandidateRepository(mongo.db),
+        ReviewRepository(mongo.db),
         LocalStorage(settings.storage_root),
         settings,
     )

@@ -7,6 +7,7 @@ from starlette.background import BackgroundTask
 
 from app.api.deps import (
     get_cleaning_service,
+    get_complaint_service,
     get_dataset_service,
     get_file_service,
     get_report_service,
@@ -21,6 +22,7 @@ from app.schemas.cleaning_api import (
     VersionList,
 )
 from app.schemas.common import ApiResponse, ok
+from app.schemas.complaint_api import AnalysisResult, AnalysisStartResult, ComplaintAnalysisRequest
 from app.schemas.dataset import MappingSuggestion, MergeRequest, MergeStartResult
 from app.schemas.file import FileStatus
 from app.schemas.file_api import FileDeleteResult, FileDetail, FileList, FileUploadResult
@@ -28,6 +30,7 @@ from app.schemas.preview_api import FilePreview
 from app.schemas.process_api import ProcessStartResult, QualityReport
 from app.schemas.result import ResultType
 from app.services.cleaning_service import CleaningService
+from app.services.complaint_service import ComplaintService
 from app.services.dataset_service import DatasetService
 from app.services.export import ExportFormat
 from app.services.file_service import FileService
@@ -39,6 +42,7 @@ Service = Annotated[FileService, Depends(get_file_service)]
 Cleaning = Annotated[CleaningService, Depends(get_cleaning_service)]
 Reports = Annotated[ReportService, Depends(get_report_service)]
 Datasets = Annotated[DatasetService, Depends(get_dataset_service)]
+Complaints = Annotated[ComplaintService, Depends(get_complaint_service)]
 
 
 @router.post(
@@ -269,6 +273,45 @@ async def export_file(
     return FileResponse(
         export.path, media_type=export.media_type, filename=export.filename, background=cleanup
     )
+
+
+@router.post(
+    "/{file_id}/analysis",
+    response_model=ApiResponse[AnalysisStartResult],
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
+async def start_analysis(
+    service: Complaints, file_id: str, request: ComplaintAnalysisRequest
+) -> ApiResponse[AnalysisStartResult]:
+    """분석을 실행한다(민원 분석: 마스킹·임베딩·속성·배정·발견·이슈). 진행은 작업 조회 API로 본다.
+
+    요청 본문 형식은 명세서에 없어 제안 형식을 쓴다(ComplaintAnalysisRequest).
+
+    파라미터:
+        service: 민원 분석 서비스
+        file_id: 파일 ID
+        request: 분석 요청(열 매핑·분리 규칙·속성 추출 방식)
+    """
+    job = await service.start_analysis(file_id, request)
+    return ok(
+        AnalysisStartResult(
+            job_id=str(job.id),
+            file_id=file_id,
+            status=job.status,
+            message="분석 작업이 등록되었습니다.",
+        )
+    )
+
+
+@router.get("/{file_id}/analysis", response_model=ApiResponse[AnalysisResult])
+async def get_analysis(service: Service, file_id: str) -> ApiResponse[AnalysisResult]:
+    """분석 결과를 조회한다(최신 분석 버전. 민원 분석이면 analysis.complaint에 요약).
+
+    파라미터:
+        service: 파일 서비스
+        file_id: 파일 ID
+    """
+    return ok(AnalysisResult.from_document(await service.latest_analysis(file_id)))
 
 
 @router.post(

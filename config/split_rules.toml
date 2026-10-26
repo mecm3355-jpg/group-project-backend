@@ -6,11 +6,13 @@
 # continuation_fields: 표지 없는 다음 줄을 이어 붙일 필드(여러 줄로 나뉜 제목 등)
 # content_field: 민원 내용으로 쓸 필드(complaints.contentMasked), content_type: body 또는 title
 # ignore_patterns: 이 정규식에 맞는 줄은 버린다(페이지 머리말·바닥글·쪽번호)
+# received_field: 접수일로 쓸 필드(선택)
 
 [sinmungo]
 start_label = "번호"
 content_field = "title"
 content_type = "title"
+received_field = "registered"
 continuation_fields = ["title"]
 # 인쇄 머리말("26. 10. 24. 오후 10:00 국민신문고 | ..."), 바닥글 URL·쪽번호("... 2/11")
 ignore_patterns = [

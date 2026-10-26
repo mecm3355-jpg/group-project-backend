@@ -50,6 +50,15 @@ class BaseRepository(Generic[M]):
         await self.collection.insert_one(doc.to_document())
         return doc
 
+    async def insert_many(self, docs: Sequence[M]) -> None:
+        """문서 여러 개를 한 번에 저장한다. 비어 있으면 아무것도 하지 않는다.
+
+        파라미터:
+            docs: 저장할 문서 모델 목록
+        """
+        if docs:
+            await self.collection.insert_many([doc.to_document() for doc in docs])
+
     async def get(self, doc_id: ObjectId) -> M | None:
         """_id로 문서 하나를 찾는다. 없으면 None.
 
@@ -74,7 +83,10 @@ class BaseRepository(Generic[M]):
             skip: 건너뛸 개수
             limit: 최대 개수. 0이면 제한 없음
         """
-        cursor = self.collection.find(dict(query)).sort(list(sort)).skip(skip).limit(limit)
+        cursor = self.collection.find(dict(query))
+        if sort:  # 정렬 조건이 없으면 저장 순서 그대로(pymongo는 빈 정렬을 받지 않는다)
+            cursor = cursor.sort(list(sort))
+        cursor = cursor.skip(skip).limit(limit)
         return [self._model.model_validate(raw) async for raw in cursor]
 
     async def count_by(self, field: str) -> dict[str, int]:

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import dashboard, files, health, jobs
+from app.api import complaints, dashboard, files, health, jobs
 from app.api.error_handlers import register_error_handlers
 from app.core.config import Settings, get_settings
 from app.core.database import Mongo, set_mongo
@@ -41,4 +41,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(files.router, prefix="/api/v1")
     app.include_router(jobs.router, prefix="/api/v1")
     app.include_router(dashboard.router, prefix="/api/v1")
+    app.include_router(complaints.router, prefix="/api/v1")
     return app

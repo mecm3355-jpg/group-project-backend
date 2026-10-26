@@ -34,6 +34,8 @@ class FormRule(BaseModel):
     content_type: Literal["body", "title"] = "body"
     continuation_fields: list[str] = []
     ignore_patterns: list[str] = []
+    # 접수일로 쓸 필드(complaints.receivedAt). 없으면 접수일 없음
+    received_field: str | None = None
 
 
 @dataclass

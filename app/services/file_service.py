@@ -8,9 +8,11 @@ from bson.errors import InvalidId
 
 from app.core.config import Settings
 from app.core.errors import AppError
+from app.repositories.complaints import ComplaintRepository
 from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
+from app.repositories.reviews import ReviewRepository
 from app.schemas.file import FileDocument, FileStatus, FileStorage
 from app.schemas.job import ANALYZE_JOB_TYPE, JobDocument
 from app.schemas.mongo import utc_now
@@ -91,6 +93,8 @@ class FileService:
         results: ResultRepository,
         storage: LocalStorage,
         settings: Settings,
+        complaints: ComplaintRepository,
+        reviews: ReviewRepository,
     ) -> None:
         """서비스를 만든다.
 
@@ -100,10 +104,14 @@ class FileService:
             results: processing_results 저장소
             storage: 원본 파일 저장소
             settings: 업로드 제한 등 설정
+            complaints: complaints 저장소(파일 삭제 때 민원도 지운다)
+            reviews: reviews 저장소(지운 민원의 검토도 지운다)
         """
         self._files = files
         self._jobs = jobs
         self._results = results
+        self._complaints = complaints
+        self._reviews = reviews
         self._storage = storage
         self._settings = settings
 
@@ -187,7 +195,9 @@ class FileService:
         return doc
 
     async def delete(self, file_id: str) -> None:
-        """파일과 관련 작업·결과, 원본·산출물·작업 파라미터 파일을 지운다. 없으면 404.
+        """파일과 관련 작업·결과·민원·검토, 원본·산출물·작업 파라미터 파일을 지운다. 없으면 404.
+
+        카테고리·후보·이슈는 여러 파일에 걸친 체계라 남긴다.
 
         파라미터:
             file_id: 파일 ID 문자열
@@ -195,6 +205,7 @@ class FileService:
         doc = await self.get(file_id)
         jobs = await self._jobs.list_by_file(doc.id)
         await self._results.delete_by_file(doc.id)
+        await self._reviews.delete_by_complaints(await self._complaints.delete_by_file(doc.id))
         await self._jobs.delete_by_file(doc.id)
         await self._files.delete(doc.id)
         await asyncio.to_thread(self._storage.delete, doc.storage.key)

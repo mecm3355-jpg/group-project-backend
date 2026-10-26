@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # 줄 신뢰도가 이 값 미만이면 사람 검수 대상
     ocr_low_confidence: float = 0.6
 
+    # 민원 분석 임베딩(PRD 6장, 로컬). 캐시 폴더를 비우면 저장소의 embedding-cache를 쓴다
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_cache_dir: Path | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
