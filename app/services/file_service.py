@@ -47,6 +47,20 @@ def parse_file_id(file_id: str) -> ObjectId:
         raise AppError("FILE_NOT_FOUND", "파일을 찾을 수 없습니다.", 404) from exc
 
 
+def require_analyzable(doc: FileDocument) -> None:
+    """내용 분석을 지원하는 형식인지 확인한다. other 형식이면 422(ANALYSIS_NOT_SUPPORTED).
+
+    파라미터:
+        doc: 파일 문서
+    """
+    if doc.category == "other":
+        raise AppError(
+            "ANALYSIS_NOT_SUPPORTED",
+            f"{doc.extension or '확장자 없는'} 파일은 내용 분석을 지원하지 않습니다.",
+            422,
+        )
+
+
 def clean_file_name(raw: str | None) -> str:
     """업로드 파일명에서 경로 부분을 떼고 파일명만 남긴다. 비어 있으면 오류.
 
@@ -241,12 +255,7 @@ class FileService:
             file_id: 파일 ID 문자열
         """
         doc = await self.get(file_id)
-        if doc.category == "other":
-            raise AppError(
-                "ANALYSIS_NOT_SUPPORTED",
-                f"{doc.extension or '확장자 없는'} 파일은 내용 분석을 지원하지 않습니다.",
-                422,
-            )
+        require_analyzable(doc)
         if await self._jobs.has_active(doc.id):
             raise AppError("JOB_ALREADY_RUNNING", "이미 처리 중인 작업이 있습니다.", 409)
         job = await self._jobs.insert(JobDocument(field=doc.id, type=ANALYZE_JOB_TYPE))
@@ -254,12 +263,13 @@ class FileService:
         return job
 
     async def latest_analysis(self, file_id: str) -> ResultDocument:
-        """가장 최근의 분석 결과(품질 진단 포함)를 돌려준다. 아직 없으면 404.
+        """가장 최근의 분석 결과(품질 진단 포함)를 돌려준다. 아직 없으면 404, other 형식이면 422.
 
         파라미터:
             file_id: 파일 ID 문자열
         """
         doc = await self.get(file_id)
+        require_analyzable(doc)
         result = await self._results.get_latest(doc.id, "analysis")
         if result is None:
             raise AppError("RESULT_NOT_FOUND", "아직 진단 결과가 없습니다.", 404)

@@ -202,10 +202,15 @@ def test_unsupported_format_is_registered_without_analysis(db_client: TestClient
     assert not any(detail["processingCapabilities"].values())
     assert detail["lastJobId"] is None
 
+    base = f"/api/v1/files/{data['fileId']}"
     for res in (
-        db_client.post(f"/api/v1/files/{data['fileId']}/process"),
-        db_client.get(f"/api/v1/files/{data['fileId']}/preview"),
+        db_client.post(f"{base}/process"),
+        db_client.get(f"{base}/preview"),
+        db_client.get(f"{base}/quality"),
+        db_client.get(f"{base}/analysis"),
+        db_client.post(f"{base}/report"),
+        db_client.post(f"{base}/cleaning-suggestions"),
     ):
-        assert res.status_code == 422
+        assert res.status_code == 422, res.request.url
     process = db_client.post(f"/api/v1/files/{data['fileId']}/process")
     assert process.json()["error"]["code"] == "ANALYSIS_NOT_SUPPORTED"

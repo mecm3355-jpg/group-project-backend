@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.schemas.result import QualityIssue, QualityResult, Severity
 from app.services.dashboard_service import summarize_quality, with_zeros
+from app.services.profiling import SCORE_BASIS
 from tests.conftest import requires_db
 from tests.test_analyze_flow import CSV, run_worker, upload
 
@@ -30,16 +31,22 @@ def test_with_zeros_keeps_unknown_values() -> None:
 def test_summarize_quality() -> None:
     summary = summarize_quality(
         [
-            QualityResult(score=90, issues=[issue("missing_values", "medium")]),
             QualityResult(
-                score=71, issues=[issue("missing_values", "high"), issue("duplicates", "low")]
+                score=90, issues=[issue("missing_values", "medium")], score_basis=SCORE_BASIS
+            ),
+            QualityResult(
+                score=71,
+                issues=[issue("missing_values", "high"), issue("duplicates", "low")],
+                score_basis=SCORE_BASIS,
             ),
             QualityResult(issues=[issue("empty_lines", "low")]),
+            QualityResult(score=10),  # 예전 기준 점수(scoreBasis 없음)는 평균에서 뺀다
         ]
     )
 
-    assert summary.analyzed_file_count == 3
+    assert summary.analyzed_file_count == 4
     assert summary.scored_file_count == 2
+    assert summary.outdated_score_file_count == 1
     assert summary.average_score == 80.5
     assert summary.issues_by_type == {"missing_values": 2, "duplicates": 1, "empty_lines": 1}
     assert summary.issues_by_severity == {"low": 2, "medium": 1, "high": 1}

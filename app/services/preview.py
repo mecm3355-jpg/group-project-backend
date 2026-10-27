@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 from itertools import islice
 from pathlib import Path
 
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps
 
 from app.core.errors import AppError
 from app.processors.document import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, OcrOptions, open_document
@@ -31,29 +31,25 @@ def to_preview_cell(value: Cell) -> PreviewCell:
     return value
 
 
-def make_thumbnail(path: Path) -> str:
+def make_thumbnail(source: Image.Image) -> str:
     """이미지를 긴 변 320px 이하 JPEG로 줄여 data URI(data:image/jpeg;base64,...)로 돌려준다.
 
-    촬영 방향(EXIF)을 반영하고, 투명한 부분은 흰색으로 채운다.
+    원본 이미지는 바꾸지 않는다. 촬영 방향(EXIF)을 반영하고, 투명한 부분은 흰색으로 채운다.
 
     파라미터:
-        path: 이미지 파일 경로
+        source: 이미 연(load한) 이미지
     """
-    try:
-        with Image.open(path) as source:
-            image: Image.Image = ImageOps.exif_transpose(source)
-            image.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
-            if image.mode in ("RGBA", "LA", "P"):
-                image = image.convert("RGBA")
-                background = Image.new("RGB", image.size, "white")
-                background.paste(image, mask=image.getchannel("A"))
-                image = background
-            elif image.mode != "RGB":
-                image = image.convert("RGB")
-            buffer = io.BytesIO()
-            image.save(buffer, format="JPEG", quality=THUMBNAIL_QUALITY)
-    except (UnidentifiedImageError, OSError) as exc:
-        raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    image: Image.Image = ImageOps.exif_transpose(source)  # 원본이 아닌 복사본을 돌려준다
+    image.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
+    if image.mode in ("RGBA", "LA", "P"):
+        image = image.convert("RGBA")
+        background = Image.new("RGB", image.size, "white")
+        background.paste(image, mask=image.getchannel("A"))
+        image = background
+    elif image.mode != "RGB":
+        image = image.convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=THUMBNAIL_QUALITY)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
@@ -105,7 +101,9 @@ def build_preview(
                 format=document.format,
                 limit=PREVIEW_LIMIT,
                 lines=list(islice(document.lines, PREVIEW_LIMIT)),
-                thumbnail=make_thumbnail(path) if extension in IMAGE_EXTENSIONS else None,
+                thumbnail=make_thumbnail(document.source_image)
+                if document.source_image is not None
+                else None,
             )
     raise AppError(
         "PREVIEW_NOT_SUPPORTED", f"{extension} 파일의 미리보기는 아직 지원하지 않습니다.", 422

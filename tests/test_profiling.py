@@ -7,6 +7,7 @@ from pydantic import JsonValue
 from app.processors.document import DocumentText, ImageInfo
 from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
+from app.services import profiling
 from app.services.profiling import (
     classify,
     histogram,
@@ -288,3 +289,12 @@ def test_plain_table_has_no_not_applicable_count() -> None:
     profile = profile_table(make_table(["a"], [["1"]]))
 
     assert "notApplicableCount" not in column_info(profile.analysis)["a"]
+
+
+def test_duplicate_check_stops_at_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(profiling, "DUPLICATE_MAX_LINES", 2)
+
+    profile = profile_text(TextLines("log", "utf-8", lines(["a", "b", "a", "a"])))
+
+    assert profile.quality.issues == []  # 앞 2줄(a, b)만 비교한다
+    assert profile.analysis["duplicateCheckLineCount"] == 2

@@ -20,6 +20,7 @@ from app.schemas.result import ResultDocument
 from app.services.job_runner import JobContext, JobHandler
 from app.services.llm import LlmClient, create_llm_client, llm_configured
 from app.services.masking import mask_text
+from app.services.profiling import without_raw_values
 from app.services.rule_report import build_rule_report
 
 PROMPT_VERSION = "file-report@2"
@@ -48,28 +49,6 @@ SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이�
 
 # 설정으로 LLM 호출기를 만든다. 연결 정보가 없으면 None(규칙 리포트)
 LlmFactory = Callable[[Settings], LlmClient | None]
-
-
-def without_raw_values(analysis: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """분석 결과에서 원본 값이 그대로 든 항목(열별 topValues, 텍스트 topKeywords)을 뺀다.
-
-    이름·이메일 같은 칸 값이 LLM으로 나가지 않게 한다. 개수·숫자 통계는 남긴다.
-
-    파라미터:
-        analysis: processing_results.analysis
-    """
-    result = {k: v for k, v in analysis.items() if k != "topKeywords"}
-    statistics = analysis.get("statistics")
-    if isinstance(statistics, dict):
-        trimmed: dict[str, JsonValue] = {}
-        for name, stats in statistics.items():
-            if isinstance(stats, dict):
-                stats = {k: v for k, v in stats.items() if k != "topValues"}
-                if not stats:
-                    continue
-            trimmed[name] = stats
-        result["statistics"] = trimmed
-    return result
 
 
 def _summary_of(result: ResultDocument) -> dict[str, JsonValue]:

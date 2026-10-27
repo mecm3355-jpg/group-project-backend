@@ -11,7 +11,7 @@ from pydantic import JsonValue
 from pymongo import MongoClient
 
 from app.core.database import Document
-from app.schemas.dataset import FieldMapping
+from app.schemas.dataset import FieldConstants, FieldMapping
 from app.services.mapping import build_mapping_input, suggest_by_rules
 from tests.conftest import TEST_URI, requires_db
 from tests.test_analyze_flow import run_worker, upload
@@ -257,3 +257,36 @@ def test_mapping_suggestion_requires_analysis(db_client: TestClient) -> None:
 
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "RESULT_NOT_FOUND"
+
+
+@requires_db
+def test_mapping_suggestion_sends_no_cell_values_to_ai(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services import dataset_service
+
+    file_id = analyzed(db_client, "경상북도 포항시_불편신고.csv", POHANG)
+    sent: list[str] = []
+
+    async def fake_suggest_by_ai(
+        llm: object,
+        columns: list[str],
+        column_info: list[JsonValue],
+        statistics: dict[str, JsonValue],
+        file_name: str,
+    ) -> tuple[FieldMapping, FieldConstants, list[str]]:
+        """AI 호출 대신 받은 통계를 기록한다."""
+        sent.append(json.dumps(statistics, ensure_ascii=False))
+        return FieldMapping(), FieldConstants(), []
+
+    monkeypatch.setattr(dataset_service, "llm_configured", lambda settings, kind: True)
+    monkeypatch.setattr(dataset_service, "create_llm_client", lambda settings, kind: object())
+    monkeypatch.setattr(dataset_service, "suggest_by_ai", fake_suggest_by_ai)
+
+    res = db_client.post(f"/api/v1/files/{file_id}/mapping-suggestion")
+
+    assert res.status_code == 200, res.text
+    [statistics] = sent
+    assert "topValues" not in statistics
+    assert "양덕동" not in statistics  # 행정동 열의 값
+    assert "경도" in statistics  # 숫자 범위는 남는다

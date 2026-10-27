@@ -81,8 +81,9 @@ class DocumentText:
     ocr_low_confidence_lines: int = 0
     low_confidence: float = 0.6
     ocr_low_confidence_pages: list[int] = field(default_factory=list)
-    # 이미지 파일일 때만 있다
+    # 이미지 파일일 때만 있다. source_image는 with 블록 안에서만 쓸 수 있다(블록이 끝나면 닫힘)
     image: ImageInfo | None = None
+    source_image: Image.Image | None = None
 
     @property
     def lines(self) -> Iterator[str]:
@@ -242,6 +243,31 @@ def _open_pdf(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
             pdf.close()
 
 
+def load_image(path: Path) -> Image.Image:
+    """이미지 파일을 열어 픽셀까지 읽는다. 다 쓰면 close해야 한다.
+
+    손상된 파일은 INVALID_FILE(422), 화소 수가 Pillow 한도(약 1억 8천만)를 넘는
+    파일(압축 폭탄 방지)은 IMAGE_TOO_LARGE(413).
+
+    파라미터:
+        path: 파일 경로
+    """
+    try:
+        image = Image.open(path)
+    except Image.DecompressionBombError as exc:
+        raise AppError(
+            "IMAGE_TOO_LARGE", "이미지 화소 수가 너무 많아 읽을 수 없습니다.", 413
+        ) from exc
+    except (UnidentifiedImageError, OSError) as exc:
+        raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    try:
+        image.load()
+    except (UnidentifiedImageError, OSError) as exc:
+        image.close()
+        raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    return image
+
+
 @contextmanager
 def _open_image(
     path: Path, ocr: OcrOptions | None, allow_missing_ocr: bool
@@ -262,25 +288,21 @@ def _open_image(
             "이미지를 읽으려면 OCR(Tesseract)이 필요합니다. 설치·설정(TESSERACT_*)을 확인하세요.",
             503,
         )
-    try:
-        image = Image.open(path)
-        image.load()
-    except (UnidentifiedImageError, OSError) as exc:
-        raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    image = load_image(path)
     info = ImageInfo(image.format, image.width, image.height, image.mode)
-    if ocr is None:
-        image.close()
-        yield DocumentText("image", iter(()), page_count=1, image=info)
-        return
-    result = DocumentText(
-        "image",
-        iter(()),
-        page_count=1,
-        ocr_engine=ocr.engine.name,
-        low_confidence=ocr.low_confidence,
-        image=info,
-    )
     try:
+        if ocr is None:
+            yield DocumentText("image", iter(()), page_count=1, image=info, source_image=image)
+            return
+        result = DocumentText(
+            "image",
+            iter(()),
+            page_count=1,
+            ocr_engine=ocr.engine.name,
+            low_confidence=ocr.low_confidence,
+            image=info,
+            source_image=image,
+        )
 
         def entries() -> Iterator[DocLine]:
             """이미지 한 장을 OCR한다."""

@@ -9,6 +9,7 @@ from app.schemas.dashboard_api import DashboardSummary, FileSummary, JobSummary,
 from app.schemas.file import FileCategory, FileStatus
 from app.schemas.job import JobStatus
 from app.schemas.result import QualityResult, Severity
+from app.services.profiling import SCORE_BASIS
 
 
 def with_zeros(counts: dict[str, int], keys: tuple[str, ...]) -> dict[str, int]:
@@ -24,10 +25,14 @@ def with_zeros(counts: dict[str, int], keys: tuple[str, ...]) -> dict[str, int]:
 def summarize_quality(qualities: list[QualityResult]) -> QualitySummary:
     """파일별 최신 품질 진단 결과를 모아 평균 점수와 문제 유형·심각도별 개수를 낸다.
 
+    평균 점수에는 지금 점수 기준(SCORE_BASIS)으로 계산한 점수만 넣는다. 예전 기준 점수는
+    outdatedScoreFileCount로 세며, 그 파일을 다시 처리하면 새 기준 점수가 된다.
+
     파라미터:
         qualities: 파일마다 하나씩인 최신 품질 진단 결과
     """
-    scores = [q.score for q in qualities if q.score is not None]
+    scored = [q for q in qualities if q.score is not None]
+    scores = [q.score for q in scored if q.score is not None and q.score_basis == SCORE_BASIS]
     by_type: dict[str, int] = {}
     by_severity = dict.fromkeys(get_args(Severity), 0)
     for quality in qualities:
@@ -37,6 +42,7 @@ def summarize_quality(qualities: list[QualityResult]) -> QualitySummary:
     return QualitySummary(
         analyzed_file_count=len(qualities),
         scored_file_count=len(scores),
+        outdated_score_file_count=len(scored) - len(scores),
         average_score=round(sum(scores) / len(scores), 1) if scores else None,
         issues_by_type=dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
         issues_by_severity=by_severity,

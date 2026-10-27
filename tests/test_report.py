@@ -21,11 +21,11 @@ from app.schemas.result import QualityIssue, QualityResult, ResultDocument
 from app.services.job_handlers import HANDLERS
 from app.services.job_runner import JobRunner
 from app.services.llm import LlmClient
+from app.services.profiling import without_raw_values
 from app.services.report_handler import (
     PROMPT_VERSION,
     build_report_input,
     make_report_handler,
-    without_raw_values,
 )
 from tests.conftest import TEST_URI, make_settings, requires_db
 from tests.test_analyze_flow import CSV, run_worker, upload

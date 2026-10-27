@@ -46,6 +46,8 @@ HISTOGRAM_BINS = 10
 # TXT 핵심어 빈도: 상위 개수와 형태소 분석할 최대 줄 수(큰 파일에서 시간이 너무 걸리지 않게)
 TOP_KEYWORDS = 20
 KEYWORD_MAX_LINES = 20_000
+# 중복 줄은 글자 있는 줄 앞 20만 줄까지만 본다(줄마다 해시를 들고 있어 메모리가 줄 수만큼 는다)
+DUPLICATE_MAX_LINES = 200_000
 # 품질 점수 가중치(합 1). 잠정으로 네 지표를 같게 둔다
 QUALITY_WEIGHTS = {"completeness": 0.25, "uniqueness": 0.25, "validity": 0.25, "consistency": 0.25}
 SCORE_BASIS = (
@@ -255,6 +257,28 @@ def top_values(counts: Counter[str]) -> list[JsonValue]:
         counts: 값별 개수
     """
     return [{"value": value, "count": count} for value, count in counts.most_common(TOP_VALUES)]
+
+
+def without_raw_values(analysis: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """분석 결과에서 원본 값이 그대로 든 항목(열별 topValues, 텍스트 topKeywords)을 뺀다.
+
+    AI 리포트·열 매핑 추천처럼 외부 LLM에 보내는 곳에서 쓴다. 개수·숫자 통계는 남긴다.
+
+    파라미터:
+        analysis: processing_results.analysis
+    """
+    result = {k: v for k, v in analysis.items() if k != "topKeywords"}
+    statistics = analysis.get("statistics")
+    if isinstance(statistics, dict):
+        trimmed: dict[str, JsonValue] = {}
+        for name, stats in statistics.items():
+            if isinstance(stats, dict):
+                stats = {k: v for k, v in stats.items() if k != "topValues"}
+                if not stats:
+                    continue
+            trimmed[name] = stats
+        result["statistics"] = trimmed
+    return result
 
 
 @dataclass
@@ -494,12 +518,13 @@ def profile_text(text: TextLines) -> Profile:
     """텍스트 전체를 한 번 돌며 줄 수·빈 줄 수·중복 줄·끝 공백 줄을 센다.
 
     로그는 수준(ERROR 등)별 줄 수를, TXT는 명사 핵심어 빈도 상위 20개(topKeywords)를 센다.
-    핵심어는 앞 20,000줄까지만 형태소 분석하며, 잘랐으면 keywordLineCount에 분석한 줄 수를 남긴다.
+    핵심어는 글자 있는 줄 앞 20,000줄, 중복 줄은 앞 200,000줄까지만 보며, 잘랐으면
+    keywordLineCount·duplicateCheckLineCount에 본 줄 수를 남긴다.
 
     파라미터:
         text: open_text로 연 텍스트(lines를 이 함수가 끝까지 읽는다)
     """
-    line_count = empty = duplicate = trailing = keyword_lines = 0
+    line_count = empty = duplicate = trailing = keyword_lines = checked_lines = 0
     counts = dict.fromkeys(LOG_KEYWORDS, 0)
     keywords: Counter[str] = Counter()
     seen: set[int] = set()  # 줄 내용의 해시(메모리를 아끼려고 문자열 대신)
@@ -512,11 +537,13 @@ def profile_text(text: TextLines) -> Profile:
             continue
         if line != line.rstrip():
             trailing += 1
-        key = hash(stripped)
-        if key in seen:
-            duplicate += 1
-        else:
-            seen.add(key)
+        if checked_lines < DUPLICATE_MAX_LINES:
+            checked_lines += 1
+            key = hash(stripped)
+            if key in seen:
+                duplicate += 1
+            else:
+                seen.add(key)
         if is_log:
             if match := LOG_KEYWORD_PATTERN.search(line):
                 keyword = "WARN" if match.group(1).startswith("WARN") else match.group(1)
@@ -570,6 +597,8 @@ def profile_text(text: TextLines) -> Profile:
         ]
         if keyword_lines < line_count - empty:
             analysis["keywordLineCount"] = keyword_lines
+    if checked_lines < line_count - empty:
+        analysis["duplicateCheckLineCount"] = checked_lines
     return Profile(QualityResult(issues=issues), analysis)
 
 

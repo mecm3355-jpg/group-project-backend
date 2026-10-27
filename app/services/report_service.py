@@ -4,7 +4,7 @@ from app.repositories.files import FileRepository
 from app.repositories.jobs import JobRepository
 from app.repositories.results import ResultRepository
 from app.schemas.job import REPORT_JOB_TYPE, JobDocument
-from app.services.file_service import parse_file_id
+from app.services.file_service import parse_file_id, require_analyzable
 
 
 class ReportService:
@@ -33,7 +33,8 @@ class ReportService:
     async def start_report(self, file_id: str) -> JobDocument:
         """리포트 작업을 만든다. 다음 경우에는 작업을 만들지 않고 거부한다.
 
-        - 파일이 없음(404), 진단 결과가 없음(404), 끝나지 않은 작업이 있음(409)
+        - 파일이 없음(404), 내용 분석 미지원 형식(422), 진단 결과가 없음(404),
+          끝나지 않은 작업이 있음(409)
 
         파라미터:
             file_id: 파일 ID 문자열
@@ -41,6 +42,7 @@ class ReportService:
         doc = await self._files.get(parse_file_id(file_id))
         if doc is None:
             raise AppError("FILE_NOT_FOUND", "파일을 찾을 수 없습니다.", 404)
+        require_analyzable(doc)
         if await self._results.get_latest(doc.id, "analysis") is None:
             raise AppError(
                 "RESULT_NOT_FOUND", "진단 결과가 없습니다. 먼저 추출·진단을 실행하세요.", 404

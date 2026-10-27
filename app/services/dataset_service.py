@@ -20,6 +20,7 @@ from app.services.file_service import parse_file_id
 from app.services.file_validation import CAPABILITIES
 from app.services.llm import create_llm_client, llm_configured
 from app.services.mapping import suggest_by_ai, suggest_by_rules
+from app.services.profiling import without_raw_values
 from app.services.storage import LocalStorage
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,8 @@ class DatasetService:
         columns = [
             str(c["name"]) for c in info if isinstance(c, dict) and isinstance(c.get("name"), str)
         ]
-        stats = analysis.analysis.get("statistics")
+        # 열별 값 빈도(topValues)는 원본 값이라 LLM에 보내지 않는다
+        stats = without_raw_values(analysis.analysis).get("statistics")
         statistics: dict[str, JsonValue] = stats if isinstance(stats, dict) else {}
 
         if llm_configured(self._settings, "fast"):
