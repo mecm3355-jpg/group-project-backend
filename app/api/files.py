@@ -66,7 +66,9 @@ async def upload_file(
             original_name=uploaded.file.original_name,
             file_type=uploaded.file.extension,
             status=uploaded.file.status,
-            message="파일이 등록되었습니다.",
+            message="파일이 등록되었습니다."
+            if uploaded.job
+            else "파일이 등록되었습니다. 이 형식은 내용 분석을 지원하지 않습니다.",
         )
     )
 

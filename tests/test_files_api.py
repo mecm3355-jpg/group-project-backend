@@ -185,3 +185,27 @@ def test_upload_creates_queued_job_and_delete_removes_it(db_client: TestClient) 
 
         db_client.delete(f"/api/v1/files/{data['fileId']}")
         assert jobs.count_documents({}) == 0
+
+
+@requires_db
+def test_unsupported_format_is_registered_without_analysis(db_client: TestClient) -> None:
+    content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
+    res = upload(db_client, "공문.hwp", content)
+
+    assert res.status_code == 201
+    data = res.json()["data"]
+    assert (data["fileType"], data["status"]) == ("hwp", "completed")
+    assert "지원하지 않습니다" in data["message"]
+
+    detail = db_client.get(f"/api/v1/files/{data['fileId']}").json()["data"]
+    assert (detail["category"], detail["mimeType"]) == ("other", "application/x-ole-storage")
+    assert not any(detail["processingCapabilities"].values())
+    assert detail["lastJobId"] is None
+
+    for res in (
+        db_client.post(f"/api/v1/files/{data['fileId']}/process"),
+        db_client.get(f"/api/v1/files/{data['fileId']}/preview"),
+    ):
+        assert res.status_code == 422
+    process = db_client.post(f"/api/v1/files/{data['fileId']}/process")
+    assert process.json()["error"]["code"] == "ANALYSIS_NOT_SUPPORTED"

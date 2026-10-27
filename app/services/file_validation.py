@@ -1,4 +1,9 @@
-"""업로드 파일의 실제 형식 검증. 확장자만 믿지 않고 파일 서명(매직 바이트)과 내부 구조를 본다."""
+"""업로드 파일의 실제 형식 검증. 확장자만 믿지 않고 파일 서명(매직 바이트)과 내부 구조를 본다.
+
+지원 형식은 확장자와 실제 내용이 맞아야 받는다. 그 밖의 형식은 기본 정보만 등록하고
+내용 분석은 하지 않는다(category other, 프론트 PRD P0). 다만 실행 파일·스크립트와
+매크로 문서, 지원 형식인 척하는 파일(확장자는 다르지만 내용이 PDF·이미지 등)은 거부한다.
+"""
 
 import json
 import zipfile
@@ -13,6 +18,15 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 JPEG_MAGIC = b"\xff\xd8\xff"
 ZIP_MAGIC = b"PK\x03\x04"
 OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+# 실행 파일 서명: Windows PE(MZ), Linux ELF, macOS Mach-O
+EXECUTABLE_MAGICS = (
+    b"MZ",
+    b"\x7fELF",
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+)
 
 TEXT_SAMPLE_BYTES = 64 * 1024
 
@@ -26,8 +40,7 @@ class FormatSpec:
     category: FileCategory
 
 
-# HWP·HWPX는 지원 여부 미결정(PRD 12장)이라 아직 받지 않는다.
-# 매크로가 든 형식(xlsm, docm 등)은 목록에 없으므로 거부된다(PRD 10장).
+# HWP·HWPX는 내용 분석 지원 여부 미결정(PRD 12장)이라 other로만 등록된다.
 SUPPORTED: dict[str, FormatSpec] = {
     "csv": FormatSpec("text", "text/csv", "tabular"),
     "tsv": FormatSpec("text", "text/tab-separated-values", "tabular"),
@@ -47,6 +60,20 @@ SUPPORTED: dict[str, FormatSpec] = {
     "png": FormatSpec("png", "image/png", "image"),
     "jpg": FormatSpec("jpeg", "image/jpeg", "image"),
     "jpeg": FormatSpec("jpeg", "image/jpeg", "image"),
+}
+
+# 매크로가 들 수 있는 형식(PRD 10장)과 실행 파일·스크립트는 other로도 받지 않는다
+BLOCKED_EXTENSIONS = {
+    "xlsm", "xltm", "xlam", "docm", "dotm", "pptm", "potm", "ppsm", "ppam",
+    "exe", "dll", "com", "scr", "msi", "msp", "bat", "cmd", "ps1", "psm1", "vbs", "vbe",
+    "js", "jse", "wsf", "wsh", "hta", "jar", "sh", "app", "apk", "lnk", "reg", "cpl",
+}  # fmt: skip
+# other 파일의 mimeType: 서명으로 알아낸 형식별 일반 미디어 타입
+OTHER_MIME_TYPES = {
+    "zip": "application/zip",
+    "ole": "application/x-ole-storage",
+    "text": "text/plain",
+    "binary": "application/octet-stream",
 }
 
 # 형식 분류별 지원 기능. tabular·image는 설계 파일 예시 그대로, text·document는 잠정값
@@ -188,10 +215,38 @@ def _check_ooxml(path: Path, extension: str, limits: ZipLimits) -> None:
         raise _invalid(extension, f"{extension} 문서 구조가 아닙니다.")
 
 
+def _detect_other(path: Path, extension: str, header: bytes) -> DetectedFormat:
+    """지원 목록에 없는 확장자를 기본 정보만 등록할 other 형식으로 판별한다.
+
+    실행 파일 서명이 있거나, 내용이 PDF·PNG·JPEG인데 확장자만 다른 파일은 거부한다.
+
+    파라미터:
+        path: 검사할 파일 경로
+        extension: 파일명에서 얻은 확장자(소문자, 점 없음, 없을 수 있음)
+        header: 파일의 처음 8바이트
+    """
+    if header.startswith(EXECUTABLE_MAGICS):
+        raise AppError("UNSUPPORTED_FILE_TYPE", "실행 파일은 업로드할 수 없습니다.", 415)
+    signature = sniff_signature(header)
+    if signature in ("pdf", "png", "jpeg"):
+        raise AppError(
+            "FILE_TYPE_MISMATCH",
+            f"확장자({extension or '없음'})와 실제 파일 형식({signature})이 다릅니다.",
+            415,
+        )
+    if signature is None:
+        with path.open("rb") as f:
+            signature = "text" if decode_text_sample(f.read(TEXT_SAMPLE_BYTES)) else "binary"
+    return DetectedFormat(
+        extension=extension, mime_type=OTHER_MIME_TYPES[signature], category="other"
+    )
+
+
 def detect_format(path: Path, extension: str, limits: ZipLimits) -> DetectedFormat:
     """확장자와 실제 내용이 같은 형식인지 검증하고 형식 정보를 돌려준다.
 
-    지원하지 않는 확장자, 확장자와 서명이 다른 파일, 손상된 파일, 매크로 문서,
+    지원 목록에 없는 확장자는 other로 등록한다(내용 분석 없음). 매크로·실행 파일 확장자,
+    실행 파일 서명, 확장자와 서명이 다른 파일, 손상된 파일, 매크로 문서,
     압축 폭탄은 AppError로 거부한다.
 
     파라미터:
@@ -199,17 +254,18 @@ def detect_format(path: Path, extension: str, limits: ZipLimits) -> DetectedForm
         extension: 파일명에서 얻은 확장자(소문자, 점 없음)
         limits: 압축 해제 제한
     """
-    spec = SUPPORTED.get(extension)
-    if spec is None:
-        allowed = ", ".join(sorted(SUPPORTED))
+    if extension in BLOCKED_EXTENSIONS:
         raise AppError(
             "UNSUPPORTED_FILE_TYPE",
-            f"지원하지 않는 파일 형식입니다: {extension or '(확장자 없음)'} (지원: {allowed})",
+            f"보안상 업로드할 수 없는 파일 형식입니다: {extension}",
             415,
         )
-
     with path.open("rb") as f:
         header = f.read(8)
+    spec = SUPPORTED.get(extension)
+    if spec is None:
+        return _detect_other(path, extension, header)
+
     actual = sniff_signature(header) or "text"
     if actual != spec.signature:
         raise AppError(

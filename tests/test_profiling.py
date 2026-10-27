@@ -125,8 +125,8 @@ def test_profile_table_matches_schema_example_shape() -> None:
     assert issues["duplicates"].count == 1
     assert issues["duplicates"].message == "중복 행 1개가 발견되었습니다."
     assert issues["empty_rows"].count == 1
-    # 100 × (11/12 채움) × (1 − 1/4 중복)
-    assert profile.quality.score == 68  # floor(68.75)
+    # 완전성 11/12, 유일성 3/4, 유효성·일관성 100의 평균(25%씩)
+    assert profile.quality.score == 91  # floor(91.67)
     assert profile.quality.metrics == {
         "completeness": 91.7,  # 11/12
         "uniqueness": 75.0,  # 1 − 1/4
@@ -280,8 +280,8 @@ def test_merged_table_excludes_structural_missing_and_source_columns() -> None:
     assert [(i.location, i.count) for i in missing] == [("지역", 1)]
     duplicates = next(i for i in profile.quality.issues if i.type == "duplicates")
     assert duplicates.count == 2
-    # 점수: 해당 칸 17개 중 16개 채움 × (1 − 중복 2/5)
-    assert profile.quality.score == int(100 * 16 / 17 * (1 - 2 / 5))
+    # 점수: 완전성(해당 칸 17개 중 16개)·유일성(1 − 중복 2/5)·유효성·일관성(100)의 평균
+    assert profile.quality.score == int((100 * 16 / 17 + 100 * 3 / 5 + 100 + 100) / 4)
 
 
 def test_plain_table_has_no_not_applicable_count() -> None:

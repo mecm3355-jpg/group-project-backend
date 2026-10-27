@@ -134,6 +134,7 @@ def test_image_without_ocr_keeps_metadata(db_client: TestClient) -> None:
 
     preview = db_client.get(f"/api/v1/files/{file_id}/preview").json()["data"]
     assert (preview["kind"], preview["format"], preview["lines"]) == ("text", "image", [])
+    assert preview["thumbnail"].startswith("data:image/jpeg;base64,")
 
     run_worker(db_client)
     detail = db_client.get(f"/api/v1/files/{file_id}").json()["data"]

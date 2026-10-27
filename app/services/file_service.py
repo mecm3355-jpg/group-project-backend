@@ -29,10 +29,10 @@ COPY_CHUNK_BYTES = 1024 * 1024
 
 @dataclass(frozen=True)
 class UploadedFile:
-    """업로드 결과. 등록된 파일과 함께 만들어진 처리 작업."""
+    """업로드 결과. 등록된 파일과 함께 만들어진 처리 작업(내용 분석 미지원 파일은 None)."""
 
     file: FileDocument
-    job: JobDocument
+    job: JobDocument | None
 
 
 def parse_file_id(file_id: str) -> ObjectId:
@@ -119,6 +119,7 @@ class FileService:
         """파일을 검증·저장하고 files 문서와 기본 처리 작업(queued)을 만든다.
 
         검증에 실패하면 아무것도 남기지 않는다. 처리 작업은 워커가 가져가 실행한다.
+        내용 분석을 지원하지 않는 형식(other)은 작업 없이 기본 정보만 등록하고 completed로 둔다.
 
         파라미터:
             source: 업로드 파일 스트림
@@ -139,7 +140,8 @@ class FileService:
 
             now = utc_now()
             file_id = ObjectId()
-            job = JobDocument(field=file_id, type=ANALYZE_JOB_TYPE)
+            analyzable = detected.category != "other"
+            job = JobDocument(field=file_id, type=ANALYZE_JOB_TYPE) if analyzable else None
             key = f"uploads/{now:%Y}/{now:%m}/{file_id}"
             doc = FileDocument(
                 _id=file_id,
@@ -149,17 +151,18 @@ class FileService:
                 category=detected.category,
                 size_bytes=size,
                 storage=FileStorage(provider=self._storage.provider, key=key),
-                status="queued",
+                status="queued" if job else "completed",
                 processing_capabilities=CAPABILITIES[detected.category],
                 created_at=now,
                 updated_at=now,
-                last_job_id=job.id,
+                last_job_id=job.id if job else None,
             )
 
             await asyncio.to_thread(self._storage.put, temp, key)
             try:
                 await self._files.insert(doc)
-                await self._jobs.insert(job)
+                if job is not None:
+                    await self._jobs.insert(job)
             except Exception:
                 await self._files.delete(file_id)
                 await asyncio.to_thread(self._storage.delete, key)
@@ -230,12 +233,20 @@ class FileService:
     async def start_processing(self, file_id: str) -> JobDocument:
         """추출·진단 작업을 새로 만든다(재처리). 끝나지 않은 작업이 있으면 409.
 
+        내용 분석을 지원하지 않는 형식(other)은 작업을 만들지 않고 422를 낸다.
+
         파일 상태는 queued로, lastJobId는 새 작업으로 바꾼다. 실행은 워커가 한다.
 
         파라미터:
             file_id: 파일 ID 문자열
         """
         doc = await self.get(file_id)
+        if doc.category == "other":
+            raise AppError(
+                "ANALYSIS_NOT_SUPPORTED",
+                f"{doc.extension or '확장자 없는'} 파일은 내용 분석을 지원하지 않습니다.",
+                422,
+            )
         if await self._jobs.has_active(doc.id):
             raise AppError("JOB_ALREADY_RUNNING", "이미 처리 중인 작업이 있습니다.", 409)
         job = await self._jobs.insert(JobDocument(field=doc.id, type=ANALYZE_JOB_TYPE))

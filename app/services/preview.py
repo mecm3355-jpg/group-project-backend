@@ -1,8 +1,12 @@
 """원본 데이터 미리보기(GET /api/v1/files/{file_id}/preview). 앞부분만 읽고 저장하지 않는다."""
 
+import base64
+import io
 from datetime import date, datetime, time
 from itertools import islice
 from pathlib import Path
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.errors import AppError
 from app.processors.document import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, OcrOptions, open_document
@@ -11,6 +15,9 @@ from app.processors.text import TEXT_EXTENSIONS, open_text
 from app.schemas.preview_api import FilePreview, PreviewCell
 
 PREVIEW_LIMIT = 20
+# 이미지 미리보기 썸네일: 긴 변 최대 픽셀과 JPEG 품질
+THUMBNAIL_MAX_SIZE = 320
+THUMBNAIL_QUALITY = 80
 
 
 def to_preview_cell(value: Cell) -> PreviewCell:
@@ -24,12 +31,38 @@ def to_preview_cell(value: Cell) -> PreviewCell:
     return value
 
 
+def make_thumbnail(path: Path) -> str:
+    """이미지를 긴 변 320px 이하 JPEG로 줄여 data URI(data:image/jpeg;base64,...)로 돌려준다.
+
+    촬영 방향(EXIF)을 반영하고, 투명한 부분은 흰색으로 채운다.
+
+    파라미터:
+        path: 이미지 파일 경로
+    """
+    try:
+        with Image.open(path) as source:
+            image: Image.Image = ImageOps.exif_transpose(source)
+            image.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
+            if image.mode in ("RGBA", "LA", "P"):
+                image = image.convert("RGBA")
+                background = Image.new("RGB", image.size, "white")
+                background.paste(image, mask=image.getchannel("A"))
+                image = background
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=THUMBNAIL_QUALITY)
+    except (UnidentifiedImageError, OSError) as exc:
+        raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 def build_preview(
     file_id: str, path: Path, extension: str, ocr: OcrOptions | None = None
 ) -> FilePreview:
     """원본 파일의 앞 20행(표) 또는 앞 20줄(텍스트·문서·이미지)을 읽는다. 스레드에서 실행한다.
 
-    스캔 PDF·이미지는 앞 20줄이 나올 때까지만 OCR한다.
+    스캔 PDF·이미지는 앞 20줄이 나올 때까지만 OCR한다. 이미지는 썸네일도 만든다.
 
     파라미터:
         file_id: 파일 ID(응답에 담는다)
@@ -72,6 +105,7 @@ def build_preview(
                 format=document.format,
                 limit=PREVIEW_LIMIT,
                 lines=list(islice(document.lines, PREVIEW_LIMIT)),
+                thumbnail=make_thumbnail(path) if extension in IMAGE_EXTENSIONS else None,
             )
     raise AppError(
         "PREVIEW_NOT_SUPPORTED", f"{extension} 파일의 미리보기는 아직 지원하지 않습니다.", 422

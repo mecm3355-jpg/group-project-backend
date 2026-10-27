@@ -102,11 +102,50 @@ def test_accepts_xlsx_and_docx(tmp_path: Path) -> None:
     assert detect_format(docx, "docx", LIMITS).category == "document"
 
 
-@pytest.mark.parametrize("extension", ["exe", "xlsm", "docm", "hwp", ""])
-def test_rejects_unsupported_extension(tmp_path: Path, extension: str) -> None:
+@pytest.mark.parametrize("extension", ["exe", "xlsm", "docm", "bat", "ps1", "js"])
+def test_rejects_blocked_extension(tmp_path: Path, extension: str) -> None:
     path = write(tmp_path, "sample", b"data")
 
     assert error_code(path, extension) == "UNSUPPORTED_FILE_TYPE"
+
+
+@pytest.mark.parametrize(
+    ("extension", "content", "mime"),
+    [
+        ("hwp", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1rest", "application/x-ole-storage"),
+        ("pptx", b"PK\x03\x04rest", "application/zip"),
+        ("md", "# 제목\n본문".encode(), "text/plain"),
+        ("", b"plain text", "text/plain"),
+        ("bin", b"\x00\x01\x02\x03binary", "application/octet-stream"),
+    ],
+)
+def test_registers_other_formats(tmp_path: Path, extension: str, content: bytes, mime: str) -> None:
+    path = write(tmp_path, "sample", content)
+
+    detected = detect_format(path, extension, LIMITS)
+
+    assert (detected.extension, detected.mime_type, detected.category) == (
+        extension,
+        mime,
+        "other",
+    )
+
+
+@pytest.mark.parametrize(
+    ("extension", "content", "code"),
+    [
+        ("dat", b"MZ\x90\x00rest", "UNSUPPORTED_FILE_TYPE"),  # 이름만 바꾼 실행 파일
+        ("dat", b"\x7fELFrest", "UNSUPPORTED_FILE_TYPE"),
+        ("dat", PDF, "FILE_TYPE_MISMATCH"),  # 지원 형식인데 확장자만 다름
+        ("gif", PNG, "FILE_TYPE_MISMATCH"),
+    ],
+)
+def test_rejects_disguised_other_files(
+    tmp_path: Path, extension: str, content: bytes, code: str
+) -> None:
+    path = write(tmp_path, "sample", content)
+
+    assert error_code(path, extension) == code
 
 
 @pytest.mark.parametrize(

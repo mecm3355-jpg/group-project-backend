@@ -46,7 +46,11 @@ HISTOGRAM_BINS = 10
 # TXT 핵심어 빈도: 상위 개수와 형태소 분석할 최대 줄 수(큰 파일에서 시간이 너무 걸리지 않게)
 TOP_KEYWORDS = 20
 KEYWORD_MAX_LINES = 20_000
-SCORE_BASIS = "점수 = 100 × 완전성 × 유일성 × 일관성 (소수점 버림, 잠정 기준)"
+# 품질 점수 가중치(합 1). 잠정으로 네 지표를 같게 둔다
+QUALITY_WEIGHTS = {"completeness": 0.25, "uniqueness": 0.25, "validity": 0.25, "consistency": 0.25}
+SCORE_BASIS = (
+    "점수 = 완전성 25% + 유일성 25% + 유효성 25% + 일관성 25% (각 0~100, 소수점 버림, 잠정 기준)"
+)
 
 
 def is_missing(value: Cell) -> bool:
@@ -278,7 +282,7 @@ def profile_table(table: Table) -> Profile:
     - 유일성(uniqueness): 1 − 중복 행 비율
     - 유효성(validity): 1 − 열 타입과 다른 값 비율(채워진 칸 기준)
     - 일관성(consistency): 1 − 열 개수가 머리글과 다른 행 비율
-    품질 점수 = 100 × 완전성 × 유일성 × 일관성의 버림(잠정, 가중치 미정이라 유효성은 아직 빼 둔다).
+    품질 점수 = 네 지표의 가중 평균(QUALITY_WEIGHTS, 잠정 25%씩)의 버림.
     버림이라 문제가 하나라도 있으면 100점이 되지 않는다.
 
     통계: 숫자 열은 최솟값·최댓값·평균·구간별 분포(histogram), 날짜 열은 최솟값·최댓값,
@@ -425,17 +429,19 @@ def profile_table(table: Table) -> Profile:
     total_rows = row_count + empty_rows
     mismatched = sum(c.mismatched() for c in stats)
     ragged = min(table.ragged_row_count, total_rows)
-    metrics = {
-        "completeness": _percent(filled, cells),
-        "uniqueness": _percent(row_count - duplicates, row_count),
-        "validity": _percent(filled - mismatched, filled),
-        "consistency": _percent(total_rows - ragged, total_rows),
+    # 지표별 (좋은 쪽 수, 전체 수). 전체가 0이면 그 지표는 만점
+    parts = {
+        "completeness": (filled, cells),
+        "uniqueness": (row_count - duplicates, row_count),
+        "validity": (filled - mismatched, filled),
+        "consistency": (total_rows - ragged, total_rows),
     }
-    score = 100.0
-    if cells:
-        score *= filled / cells
-        score *= 1 - duplicates / row_count
-        score *= 1 - ragged / total_rows
+    metrics = {name: _percent(good, whole) for name, (good, whole) in parts.items()}
+    # 점수는 반올림 전 비율로 계산한다(반올림한 지표를 더하면 99.95가 100이 될 수 있다)
+    score = sum(
+        QUALITY_WEIGHTS[name] * (100 * good / whole if whole else 100.0)
+        for name, (good, whole) in parts.items()
+    )
 
     columns: list[JsonValue] = []
     statistics: dict[str, JsonValue] = {}
