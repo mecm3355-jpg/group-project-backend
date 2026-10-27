@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 from itertools import islice
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 from app.core.errors import AppError
 from app.processors.document import DOCUMENT_EXTENSIONS, IMAGE_EXTENSIONS, OcrOptions, open_document
@@ -20,6 +20,17 @@ PREVIEW_LIMIT = 20
 # (JSON 응답에 base64로 넣으므로 수십 KB 안쪽이 되도록 작게 잡는다)
 THUMBNAIL_MAX_SIZE = 320
 THUMBNAIL_QUALITY = 80
+# EXIF 촬영 방향(Orientation 태그 0x0112) 값별로 바로 세우는 변환(ImageOps.exif_transpose와 같은 표)
+EXIF_ORIENTATION = 0x0112
+ORIENTATION_TRANSPOSE = {
+    2: Image.Transpose.FLIP_LEFT_RIGHT,
+    3: Image.Transpose.ROTATE_180,
+    4: Image.Transpose.FLIP_TOP_BOTTOM,
+    5: Image.Transpose.TRANSPOSE,
+    6: Image.Transpose.ROTATE_270,
+    7: Image.Transpose.TRANSVERSE,
+    8: Image.Transpose.ROTATE_90,
+}
 
 
 def to_preview_cell(value: Cell) -> PreviewCell:
@@ -42,10 +53,19 @@ def make_thumbnail(source: Image.Image) -> str:
     파라미터:
         source: 이미 연(load한) 이미지
     """
-    # 휴대폰 사진은 픽셀은 가로로 두고 EXIF에 회전 정보만 남기므로, 먼저 돌려야 바로 보인다
-    image: Image.Image = ImageOps.exif_transpose(source)  # 원본이 아닌 복사본을 돌려준다
-    # thumbnail은 비율을 지키며 줄이기만 한다(작은 이미지는 키우지 않는다)
-    image.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
+    # 원본 크기 복사본을 만들지 않도록 먼저 줄인다(exif_transpose는 원본 크기로 복사해 큰 사진에서
+    # 메모리를 두 배로 쓴다). 비율을 지키며 줄이기만 하고, 작은 이미지는 키우지 않는다
+    ratio = min(1.0, THUMBNAIL_MAX_SIZE / max(source.width, source.height))
+    if ratio < 1.0:
+        size = (max(1, round(source.width * ratio)), max(1, round(source.height * ratio)))
+        image = source.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
+    else:
+        image = source.copy()
+    # 휴대폰 사진은 픽셀은 가로로 두고 EXIF에 회전 정보만 남기므로, 줄인 뒤 돌려 바로 세운다
+    # (긴 변 기준 정사각 상자라 돌려도 320px 안에 든다)
+    transpose = ORIENTATION_TRANSPOSE.get(source.getexif().get(EXIF_ORIENTATION, 1))
+    if transpose is not None:
+        image = image.transpose(transpose)
     # JPEG는 투명도를 못 담는다. 그냥 RGB로 바꾸면 투명 부분이 검게 나오므로 흰 바탕에 합성한다
     # (P는 팔레트에 투명색이 있을 수 있어 RGBA를 거친다)
     if image.mode in ("RGBA", "LA", "P"):

@@ -62,3 +62,15 @@ def test_decompression_bomb_is_too_large(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(AppError) as info:
         load_image(path)
     assert (info.value.code, info.value.status_code) == ("IMAGE_TOO_LARGE", 413)
+
+
+def test_thumbnail_applies_exif_rotation(tmp_path: Path) -> None:
+    path = tmp_path / "phone"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # 시계 방향 90도로 돌려 봐야 하는 사진
+    Image.new("RGB", (800, 400), "blue").save(path, format="JPEG", exif=exif)
+
+    with load_image(path) as image:
+        thumbnail = decode(make_thumbnail(image))
+
+    assert thumbnail.size == (160, 320)

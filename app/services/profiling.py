@@ -54,6 +54,11 @@ HISTOGRAM_BINS = 10
 # TXT 핵심어 빈도: 상위 개수와 형태소 분석할 최대 줄 수(큰 파일에서 시간이 너무 걸리지 않게)
 TOP_KEYWORDS = 20
 KEYWORD_MAX_LINES = 20_000
+# 형태소 분석은 줄이 길수록 느려진다(한 줄 128만 자에 12초). 줄 길이와 전체 글자 수도 제한한다
+KEYWORD_MAX_LINE_CHARS = 5_000
+KEYWORD_MAX_CHARS = 1_000_000
+# 범주형 값 빈도에 담는 값의 최대 길이. 아주 긴 칸 값이 DB·응답에 그대로 들어가지 않게 자른다
+TOP_VALUE_MAX_CHARS = 200
 # 중복 줄은 글자 있는 줄 앞 20만 줄까지만 본다(줄마다 해시를 들고 있어 메모리가 줄 수만큼 는다)
 DUPLICATE_MAX_LINES = 200_000
 # 품질 점수 가중치(합 1). 잠정으로 네 지표를 같게 둔다
@@ -84,7 +89,10 @@ def parse_number(text: str) -> float | None:
     # float()에 바로 넣지 않는다: "nan", "inf", "1e5" 같은 문자열도 숫자로 받아 버린다
     if not NUMBER_PATTERN.match(stripped):
         return None
-    return float(stripped.replace(",", ""))
+    number = float(stripped.replace(",", ""))
+    # 자릿수가 아주 많은 값(9가 400개 등)은 float로 바꾸면 inf가 된다. 통계를 망가뜨리므로
+    # 숫자로 보지 않는다(열이 숫자형이면 형식 불일치로 잡힌다)
+    return number if math.isfinite(number) else None
 
 
 def parse_datetime(text: str) -> datetime | None:
@@ -252,15 +260,30 @@ def _percent(part: float, whole: float) -> float:
     return round(100 * part / whole, 1) if whole else 100.0
 
 
-def histogram(numbers: list[float]) -> list[JsonValue]:
+def _edge(value: float) -> float | int:
+    """구간 경계값을 유효숫자 6자리로 반올림한다(정수면 int).
+
+    소수 자리 기준(_round)으로 자르면 0.00001 단위 값의 경계가 모두 0이 되어 읽을 수 없다.
+
+    파라미터:
+        value: 경계값
+    """
+    rounded = float(f"{value:.6g}")
+    return int(rounded) if rounded.is_integer() else rounded
+
+
+def histogram(numbers: list[float]) -> list[JsonValue] | None:
     """숫자 목록을 같은 폭 구간(최대 10개)으로 나눠 구간별 개수를 센다.
 
     마지막 구간은 최댓값을 포함한다. 값이 모두 같으면 구간 하나다.
+    범위가 float로 표현되지 않을 만큼 넓으면(예: −1e308~1e308) 나눌 수 없어 None.
 
     파라미터:
-        numbers: 숫자 값 목록(비어 있지 않음)
+        numbers: 숫자 값 목록(비어 있지 않음, 모두 유한한 값)
     """
     low, high = min(numbers), max(numbers)
+    if not math.isfinite(high - low):
+        return None
     # 값 종류가 구간 수보다 적으면 그 수만큼만 나눈다(빈 구간이 줄줄이 생기지 않게)
     bins = 1 if low == high else min(HISTOGRAM_BINS, len(set(numbers)))
     width = (high - low) / bins
@@ -272,8 +295,8 @@ def histogram(numbers: list[float]) -> list[JsonValue]:
     # 마지막 구간 끝은 low + width * bins 대신 high를 써서 부동소수 오차로 최댓값보다 작아지지 않게
     return [
         {
-            "start": _round(low + width * i),
-            "end": _round(high if i == bins - 1 else low + width * (i + 1)),
+            "start": _edge(low + width * i),
+            "end": _edge(high if i == bins - 1 else low + width * (i + 1)),
             "count": count,
         }
         for i, count in enumerate(counts)
@@ -281,12 +304,30 @@ def histogram(numbers: list[float]) -> list[JsonValue]:
 
 
 def top_values(counts: Counter[str]) -> list[JsonValue]:
-    """많이 나온 값 상위 10개와 개수를 돌려준다.
+    """많이 나온 값 상위 10개와 개수를 돌려준다. 200자를 넘는 값은 잘라 끝에 …를 붙인다.
 
     파라미터:
         counts: 값별 개수
     """
-    return [{"value": value, "count": count} for value, count in counts.most_common(TOP_VALUES)]
+    return [
+        {
+            "value": value
+            if len(value) <= TOP_VALUE_MAX_CHARS
+            else value[:TOP_VALUE_MAX_CHARS] + "…",
+            "count": count,
+        }
+        for value, count in counts.most_common(TOP_VALUES)
+    ]
+
+
+def _mean(numbers: list[float]) -> float:
+    """평균. 합이 float 범위를 넘으면(아주 큰 값이 많을 때) 나눈 뒤 더해 넘침을 피한다.
+
+    파라미터:
+        numbers: 숫자 값 목록(비어 있지 않음, 모두 유한한 값)
+    """
+    mean = sum(numbers) / len(numbers)
+    return mean if math.isfinite(mean) else sum(n / len(numbers) for n in numbers)
 
 
 def without_raw_values(analysis: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -540,12 +581,15 @@ def profile_table(table: Table) -> Profile:
         columns.append(info)
         # 통계는 열 타입에 맞는 것만 낸다. 형식이 다른 값(숫자 열의 글자)은 numbers에 없다
         if kind == "number" and column.numbers:
-            statistics[column.name] = {
+            number_stats: dict[str, JsonValue] = {
                 "min": _round(min(column.numbers)),
                 "max": _round(max(column.numbers)),
-                "mean": _round(sum(column.numbers) / len(column.numbers)),
-                "histogram": histogram(column.numbers),
+                "mean": _round(_mean(column.numbers)),
             }
+            # 범위가 너무 넓어 구간을 나눌 수 없으면 분포만 뺀다(최솟값·최댓값·평균은 남긴다)
+            if (bins := histogram(column.numbers)) is not None:
+                number_stats["histogram"] = bins
+            statistics[column.name] = number_stats
         elif kind == "date" and column.dates:
             statistics[column.name] = {
                 "min": min(column.dates).isoformat(),
@@ -579,13 +623,13 @@ def profile_text(text: TextLines) -> Profile:
     """텍스트 전체를 한 번 돌며 줄 수·빈 줄 수·중복 줄·끝 공백 줄을 센다.
 
     로그는 수준(ERROR 등)별 줄 수를, TXT는 명사 핵심어 빈도 상위 20개(topKeywords)를 센다.
-    핵심어는 글자 있는 줄 앞 20,000줄, 중복 줄은 앞 200,000줄까지만 보며, 잘랐으면
-    keywordLineCount·duplicateCheckLineCount에 본 줄 수를 남긴다.
+    핵심어는 글자 있는 줄 앞 20,000줄(전체 100만 자, 줄마다 앞 5,000자), 중복 줄은
+    앞 200,000줄까지만 보며, 잘랐으면 keywordLineCount·duplicateCheckLineCount에 본 줄 수를 남긴다.
 
     파라미터:
         text: open_text로 연 텍스트(lines를 이 함수가 끝까지 읽는다)
     """
-    line_count = empty = duplicate = trailing = keyword_lines = checked_lines = 0
+    line_count = empty = duplicate = trailing = keyword_lines = checked_lines = keyword_chars = 0
     counts = dict.fromkeys(LOG_KEYWORDS, 0)
     keywords: Counter[str] = Counter()
     seen: set[int] = set()  # 줄 내용의 해시(메모리를 아끼려고 문자열 대신)
@@ -613,9 +657,11 @@ def profile_text(text: TextLines) -> Profile:
                 keyword = "WARN" if match.group(1).startswith("WARN") else match.group(1)
                 counts[keyword] += 1
         # 형태소 분석은 줄당 비용이 커서 앞부분만 본다. 핵심어 경향을 보기엔 충분하다
-        elif keyword_lines < KEYWORD_MAX_LINES:
+        elif keyword_lines < KEYWORD_MAX_LINES and keyword_chars < KEYWORD_MAX_CHARS:
             keyword_lines += 1
-            keywords.update(noun_tokens(stripped))
+            sample = stripped[:KEYWORD_MAX_LINE_CHARS]
+            keyword_chars += len(sample)
+            keywords.update(noun_tokens(sample))
 
     # 텍스트 문제는 모두 내용 손실이 없는 서식 문제라 low. 텍스트에는 점수를 매기지 않는다
     # (설계 파일 TXT·LOG 예시에 score가 없다)

@@ -71,7 +71,13 @@ BLOCKED_EXTENSIONS = {
     "xlsm", "xltm", "xlam", "docm", "dotm", "pptm", "potm", "ppsm", "ppam",
     "exe", "dll", "com", "scr", "msi", "msp", "bat", "cmd", "ps1", "psm1", "vbs", "vbe",
     "js", "jse", "wsf", "wsh", "hta", "jar", "sh", "app", "apk", "lnk", "reg", "cpl",
+    "pif", "msix", "msixbundle", "appx", "appxbundle", "chm", "url", "xll", "xla", "inf",
+    "scf", "gadget", "vb", "ws", "psd1",
 }  # fmt: skip
+# OLE(구형 XLS·DOC 등) 안 VBA 매크로 저장소 이름. 디렉터리 항목 이름은 UTF-16LE로 저장된다.
+# PPT는 매크로를 압축된 스트림 안에 두어 이 방법으로는 찾지 못한다(한계)
+OLE_VBA_MARKER = "_VBA_PROJECT".encode("utf-16-le")
+OLE_SCAN_CHUNK = 1024 * 1024
 # other 파일의 mimeType: 서명으로 알아낸 형식별 일반 미디어 타입
 OTHER_MIME_TYPES = {
     "zip": "application/zip",
@@ -234,10 +240,80 @@ def _check_ooxml(path: Path, extension: str, limits: ZipLimits) -> None:
         raise _invalid(extension, f"{extension} 문서 구조가 아닙니다.")
 
 
+def _is_executable(path: Path, header: bytes) -> bool:
+    """실행 파일인지 본다. ELF·Mach-O는 서명으로, MZ는 PE 헤더나 텍스트 여부까지 확인한다.
+
+    "MZ"로 시작하는 평범한 텍스트(예: "MZ 지역 목록")를 실행 파일로 잘못 막지 않으려고,
+    MZ면 0x3C 위치가 가리키는 PE 서명이 있거나 텍스트로 읽히지 않을 때만 실행 파일로 본다.
+
+    파라미터:
+        path: 검사할 파일 경로
+        header: 파일의 처음 8바이트
+    """
+    if not header.startswith(EXECUTABLE_MAGICS):
+        return False
+    if not header.startswith(b"MZ"):
+        return True
+    with path.open("rb") as f:
+        dos = f.read(0x40)
+        if len(dos) == 0x40:
+            f.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            if f.read(4) == b"PE\x00\x00":
+                return True
+        f.seek(0)
+        return decode_text_sample(f.read(TEXT_SAMPLE_BYTES)) is None
+
+
+def _check_ole_macro(path: Path, extension: str) -> None:
+    """OLE 파일(XLS·DOC 등)에 VBA 매크로 저장소가 있으면 거부한다(PRD 10장 매크로 문서 차단).
+
+    파일을 1MB씩 읽어 매크로 저장소 이름(UTF-16LE)을 찾는다. 조각 경계에 걸친 이름도 찾도록
+    앞 조각의 끝부분을 겹쳐 본다.
+
+    파라미터:
+        path: 검사할 파일 경로
+        extension: 업로드한 파일의 확장자(오류 메시지용)
+    """
+    overlap = len(OLE_VBA_MARKER) - 1
+    tail = b""
+    with path.open("rb") as f:
+        while chunk := f.read(OLE_SCAN_CHUNK):
+            if OLE_VBA_MARKER in tail + chunk:
+                raise AppError(
+                    "MACRO_NOT_ALLOWED",
+                    f"매크로가 포함된 문서는 업로드할 수 없습니다({extension or '확장자 없음'}).",
+                    415,
+                )
+            tail = chunk[-overlap:]
+
+
+def _check_zip_macro(path: Path, extension: str) -> None:
+    """ZIP(OOXML 등) 안에 매크로 파트(vbaProject.bin)가 있으면 거부한다.
+
+    확장자만 .zip 등으로 바꾼 XLSM·DOCM을 막는다. 압축은 풀지 않고 목록만 본다.
+    손상된 ZIP은 내용 분석을 하지 않는 other 파일이라 그대로 둔다.
+
+    파라미터:
+        path: 검사할 파일 경로
+        extension: 업로드한 파일의 확장자(오류 메시지용)
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile:
+        return
+    if any(name.lower().endswith("vbaproject.bin") for name in names):
+        raise AppError(
+            "MACRO_NOT_ALLOWED",
+            f"매크로가 포함된 문서는 업로드할 수 없습니다({extension or '확장자 없음'}).",
+            415,
+        )
+
+
 def _detect_other(path: Path, extension: str, header: bytes) -> DetectedFormat:
     """지원 목록에 없는 확장자를 기본 정보만 등록할 other 형식으로 판별한다.
 
-    실행 파일 서명이 있거나, 내용이 PDF·PNG·JPEG인데 확장자만 다른 파일은 거부한다.
+    실행 파일, 매크로가 든 OLE·ZIP 문서, 내용이 PDF·PNG·JPEG인데 확장자만 다른 파일은 거부한다.
 
     파라미터:
         path: 검사할 파일 경로
@@ -245,9 +321,14 @@ def _detect_other(path: Path, extension: str, header: bytes) -> DetectedFormat:
         header: 파일의 처음 8바이트
     """
     # 확장자를 바꿔(예: .exe → .dat) 차단 목록을 피한 실행 파일을 내용으로 막는다
-    if header.startswith(EXECUTABLE_MAGICS):
+    if _is_executable(path, header):
         raise AppError("UNSUPPORTED_FILE_TYPE", "실행 파일은 업로드할 수 없습니다.", 415)
     signature = sniff_signature(header)
+    # 매크로를 담을 수 있는 컨테이너(구형 DOC·PPT, 이름만 바꾼 XLSM 등)는 매크로 여부를 본다
+    if signature == "ole":
+        _check_ole_macro(path, extension)
+    elif signature == "zip":
+        _check_zip_macro(path, extension)
     # 지원 형식인데 확장자만 틀린 파일은 other로 받으면 분석 기회를 잃으므로, 확장자를 고쳐
     # 다시 올리도록 거부한다. ZIP·OLE는 다른 형식(HWPX·DOC 등)도 많이 써서 other로 둔다
     if signature in ("pdf", "png", "jpeg"):
@@ -302,10 +383,13 @@ def detect_format(path: Path, extension: str, limits: ZipLimits) -> DetectedForm
         )
 
     # 4) 서명이 맞아도 내부 구조를 본다. 서명 확인은 싸고 구조 확인은 비싸므로 이 순서다.
-    # PDF·이미지·XLS는 여기서 깊게 보지 않고, 읽을 때 손상이 드러나면 INVALID_FILE로 알린다
+    # PDF·이미지는 여기서 깊게 보지 않고, 읽을 때 손상이 드러나면 INVALID_FILE로 알린다.
+    # XLS는 구조 대신 매크로 여부만 본다(XLSX의 vbaProject.bin 검사와 같은 기준)
     if spec.signature == "text":
         _check_text(path, extension)
     elif spec.signature == "zip":
         _check_ooxml(path, extension, limits)
+    elif spec.signature == "ole":
+        _check_ole_macro(path, extension)
 
     return DetectedFormat(extension=extension, mime_type=spec.mime_type, category=spec.category)

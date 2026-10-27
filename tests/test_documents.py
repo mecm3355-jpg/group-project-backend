@@ -129,3 +129,9 @@ def test_result_document_keeps_all_result_objects() -> None:
     # 해당 없는 결과 객체는 빈 객체로 저장
     assert doc["cleaning"] == {}
     assert doc["ai"] == {}
+
+
+def test_quality_result_schema_keeps_fields() -> None:
+    schema = QualityResult.model_json_schema(mode="serialization")
+
+    assert {"score", "issues", "metrics", "scoreBasis"} <= set(schema["properties"])

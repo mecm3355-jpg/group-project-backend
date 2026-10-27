@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.core.errors import AppError
+from app.services.file_service import file_extension
 from app.services.file_validation import ZipLimits, decode_text_sample, detect_format
 
 LIMITS = ZipLimits(max_uncompressed_bytes=10 * 1024 * 1024, max_entries=100)
@@ -235,3 +236,44 @@ def test_decode_text_sample_allows_cut_multibyte_char() -> None:
     sample = "가나다".encode()[:-1]
 
     assert decode_text_sample(sample) == "가나"
+
+
+def test_text_starting_with_mz_is_not_executable(tmp_path: Path) -> None:
+    path = write(tmp_path, "regions", "MZ 지역 목록\n포항\n".encode())
+
+    assert detect_format(path, "dat", LIMITS).category == "other"
+
+
+def test_pe_executable_with_other_extension_is_rejected(tmp_path: Path) -> None:
+    # 0x3C 위치가 0x40을 가리키고, 그곳에 PE 서명이 있는 최소 PE 헤더
+    content = b"MZ" + b"\x00" * 0x3A + (0x40).to_bytes(4, "little") + b"PE\x00\x00"
+    path = write(tmp_path, "tool", content)
+
+    assert error_code(path, "dat") == "UNSUPPORTED_FILE_TYPE"
+
+
+def test_ole_document_with_macro_is_rejected(tmp_path: Path) -> None:
+    ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 100
+    macro = ole + "_VBA_PROJECT".encode("utf-16-le") + b"\x00" * 10
+    for extension in ("doc", "xls"):
+        assert error_code(write(tmp_path, f"m.{extension}", macro), extension) == (
+            "MACRO_NOT_ALLOWED"
+        )
+    assert detect_format(write(tmp_path, "clean.doc", ole), "doc", LIMITS).category == "other"
+
+
+def test_renamed_macro_workbook_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "book.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<x/>")
+        archive.writestr("xl/vbaProject.bin", b"vba")
+
+    assert error_code(path, "zip") == "MACRO_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize(
+    ("name", "extension"),
+    [("evil.bat.", "bat"), ("evil.BAT . ", "bat"), (".bashrc", "bashrc"), ("file.", "")],
+)
+def test_file_extension_ignores_trailing_dots(name: str, extension: str) -> None:
+    assert file_extension(name) == extension

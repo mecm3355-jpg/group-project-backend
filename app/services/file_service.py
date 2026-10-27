@@ -63,6 +63,22 @@ def require_analyzable(doc: FileDocument) -> None:
         )
 
 
+def file_extension(name: str) -> str:
+    """파일명에서 확장자를 소문자로 꺼낸다(점 없음, 없으면 빈 문자열).
+
+    Windows는 이름 끝의 점·공백을 무시하므로("evil.bat." = "evil.bat") 지우고 본다.
+    점으로 시작하고 다른 점이 없는 이름(.bashrc)은 이름 전체를 확장자로 본다.
+
+    파라미터:
+        name: clean_file_name을 거친 파일명
+    """
+    trimmed = name.rstrip(". ")
+    suffix = Path(trimmed).suffix
+    if not suffix and trimmed.startswith("."):
+        suffix = trimmed
+    return suffix.lstrip(".").lower()
+
+
 def clean_file_name(raw: str | None) -> str:
     """업로드 파일명에서 경로 부분을 떼고 파일명만 남긴다. 비어 있으면 오류.
 
@@ -149,7 +165,7 @@ class FileService:
         """
         name = clean_file_name(file_name)
         # 확장자는 대소문자를 무시한다(DATA.CSV). 실제 형식은 아래 detect_format이 내용으로 확인한다
-        extension = Path(name).suffix.lstrip(".").lower()
+        extension = file_extension(name)
         # DOCX·XLSX는 ZIP이라 압축 폭탄을 막을 한도를 함께 넘긴다
         limits = ZipLimits(
             self._settings.max_zip_uncompressed_bytes, self._settings.max_zip_entries

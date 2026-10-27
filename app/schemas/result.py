@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 
 from bson import ObjectId
-from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, model_serializer
+from pydantic import Field, JsonValue
 
 from app.schemas.mongo import MongoDocument, MongoModel, utc_now
 
@@ -33,23 +33,10 @@ class QualityResult(MongoModel):
     # 0~100 품질 점수. 텍스트 예시처럼 점수 없이 이슈만 있는 형식이 있어 선택
     score: int | None = None
     issues: list[QualityIssue] = Field(default_factory=list)
-    metrics: dict[str, float] | None = None
-    score_basis: str | None = None
-
-    @model_serializer(mode="wrap")
-    def _drop_empty_extras(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
-        """기본 직렬화 결과에서 값이 없는 metrics·scoreBasis를 뺀다.
-
-        파라미터:
-            handler: pydantic 기본 직렬화 함수
-        """
-        # 기본 직렬화를 먼저 거쳐 별칭·중첩 모델 처리는 pydantic에 맡기고, 빈 키만 지운다
-        data: dict[str, object] = handler(self)
-        # by_alias 여부에 따라 키가 score_basis 또는 scoreBasis다
-        for key in ("metrics", "score_basis", "scoreBasis"):
-            if key in data and data[key] is None:
-                del data[key]
-        return data
+    # 값이 없으면 저장·응답에서 뺀다. model_serializer 대신 exclude_if를 써야 OpenAPI 스키마에
+    # score·issues 같은 필드 정의가 그대로 남는다(프론트 타입 생성용)
+    metrics: dict[str, float] | None = Field(default=None, exclude_if=lambda v: v is None)
+    score_basis: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class ResultDocument(MongoDocument):

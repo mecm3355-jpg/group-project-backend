@@ -132,9 +132,9 @@ def build_rule_report(analysis: ResultDocument, cleaning: ResultDocument | None)
     ]
     # 정제 추천은 POST cleaning-suggestions와 같은 규칙 추천(suggest_rules)을 재사용해
     # 리포트와 추천 화면이 서로 다른 말을 하지 않게 한다.
-    # 우선순위는 그 열의 품질 문제 심각도를 따른다. issues가 심각도순이라 dict에는 열마다
-    # 마지막(가장 가벼운) 문제가 남는다. 열과 연결되지 않는 규칙은 medium
-    severity_of = {i.location: i.severity for i in issues}
+    # 우선순위는 그 열의 가장 심각한 품질 문제를 따른다. issues가 심각도순이라 거꾸로 넣어
+    # 열마다 가장 심각한 문제가 마지막에 덮어쓰게 한다. 열과 연결되지 않는 규칙은 medium
+    severity_of = {i.location: i.severity for i in reversed(issues)}
     recommendations = [
         ReportRecommendation(
             action=f"{s.rule.type}"

@@ -109,9 +109,9 @@ def test_profile_table_matches_schema_example_shape() -> None:
             "max": 50000,
             "mean": 18750,
             "histogram": [
-                {"start": 1000, "end": 17333.3333, "count": 3},
-                {"start": 17333.3333, "end": 33666.6667, "count": 0},
-                {"start": 33666.6667, "end": 50000, "count": 1},
+                {"start": 1000, "end": 17333.3, "count": 3},
+                {"start": 17333.3, "end": 33666.7, "count": 0},
+                {"start": 33666.7, "end": 50000, "count": 1},
             ],
         },
         "date": {"min": "2026-01-01T00:00:00", "max": "2026-03-01T00:00:00"},
@@ -239,7 +239,9 @@ def test_free_text_column_has_no_top_values() -> None:
 def test_histogram_single_value_and_last_bin_includes_max() -> None:
     assert histogram([5.0, 5.0]) == [{"start": 5, "end": 5, "count": 2}]
     bins = histogram([0.0, 1.0, 2.0, 10.0])
-    assert sum(b["count"] for b in bins if isinstance(b, dict) and isinstance(b["count"], int)) == 4
+    assert bins is not None
+    counts = [b["count"] for b in bins if isinstance(b, dict)]
+    assert sum(c for c in counts if isinstance(c, int)) == 4
     assert bins[-1] == {"start": 7.5, "end": 10, "count": 1}
 
 
@@ -298,3 +300,64 @@ def test_duplicate_check_stops_at_limit(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert profile.quality.issues == []  # 앞 2줄(a, b)만 비교한다
     assert profile.analysis["duplicateCheckLineCount"] == 2
+
+
+def test_huge_number_is_not_a_number_and_does_not_crash() -> None:
+    rows: list[list[Cell]] = [["9" * 400]]
+    rows += [[str(i)] for i in range(19)]
+
+    profile = profile_table(make_table(["n"], rows))
+
+    issue = next(i for i in profile.quality.issues if i.type == "type_mismatch")
+    assert issue.count == 1  # inf가 되는 값은 숫자로 보지 않는다
+    stats = profile.analysis["statistics"]
+    assert isinstance(stats, dict) and stats["n"] == {
+        "min": 0,
+        "max": 18,
+        "mean": 9,
+        "histogram": histogram([float(i) for i in range(19)]),
+    }
+
+
+def test_histogram_of_overflowing_range_is_skipped() -> None:
+    # CSV 문자열로는 이 범위가 나오지 않지만(지수 표기는 숫자로 보지 않음) 엑셀 숫자 칸은 가능하다
+    assert histogram([-1e308, 1e308]) is None
+
+    profile = profile_table(make_table(["n"], [[-1e308], [1e308], [1e308]]))
+    stats = profile.analysis["statistics"]
+    assert isinstance(stats, dict) and stats["n"] == {
+        "min": -1e308,
+        "max": 1e308,
+        "mean": 3.333333333333333e307,  # 합이 넘쳐도 평균은 구한다
+    }
+
+
+def test_histogram_edges_keep_small_scale_values() -> None:
+    bins = histogram([0.0, 0.00001, 0.00002])
+
+    assert bins is not None
+    starts = [b["start"] for b in bins if isinstance(b, dict)]
+    assert starts == [0, 6.66667e-06, 1.33333e-05]
+
+
+def test_top_values_truncate_long_values() -> None:
+    long_value = "가" * 300
+    profile = profile_table(make_table(["memo"], [[long_value], ["짧음"]]))
+
+    stats = profile.analysis["statistics"]
+    assert isinstance(stats, dict)
+    memo = stats["memo"]
+    assert isinstance(memo, dict) and isinstance(memo["topValues"], list)
+    values = [v["value"] for v in memo["topValues"] if isinstance(v, dict)]
+    assert "가" * 200 + "…" in values
+
+
+def test_keyword_extraction_stops_at_character_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(profiling, "KEYWORD_MAX_CHARS", 10)
+
+    profile = profile_text(
+        TextLines("txt", "utf-8", lines(["가로등 고장 신고", "도로 파손", "주차"]))
+    )
+
+    # 첫 줄(9자)까지 보고 둘째 줄에서 한도(10자)를 넘겨 셋째 줄은 보지 않는다
+    assert profile.analysis["keywordLineCount"] == 2

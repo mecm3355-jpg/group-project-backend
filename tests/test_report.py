@@ -15,18 +15,20 @@ from pymongo import MongoClient
 from app.core.config import Settings
 from app.core.database import Document, Mongo
 from app.main import create_app
+from app.processors.tabular import Cell, Table
 from app.schemas.file import FileDocument, FileStorage, ProcessingCapabilities
 from app.schemas.job import REPORT_JOB_TYPE
 from app.schemas.result import QualityIssue, QualityResult, ResultDocument
 from app.services.job_handlers import HANDLERS
 from app.services.job_runner import JobRunner
 from app.services.llm import LlmClient
-from app.services.profiling import without_raw_values
+from app.services.profiling import profile_table, without_raw_values
 from app.services.report_handler import (
     PROMPT_VERSION,
     build_report_input,
     make_report_handler,
 )
+from app.services.rule_report import build_rule_report
 from tests.conftest import TEST_URI, make_settings, requires_db
 from tests.test_analyze_flow import CSV, run_worker, upload
 from tests.test_llm import FakeBackend
@@ -278,3 +280,25 @@ def test_report_llm_failure_is_recorded(llm_client: TestClient) -> None:
     assert job["status"] == "failed"
     assert job["stage"] == "ai_summary"
     assert job["error"]["code"] == "LLM_INVALID_RESPONSE"
+
+
+def test_rule_report_priority_follows_most_severe_issue_of_column() -> None:
+    # name 열: 앞뒤 공백 3개(low), 결측 5/10(high). age 열은 빈 행으로 세지 않게 채워 둔다
+    rows: list[list[Cell]] = [[" 홍길동" if i < 3 else "김철수", "1"] for i in range(5)]
+    rows += [["", "1"] for _ in range(5)]
+    profile = profile_table(Table("csv", "utf-8", None, ["name", "age"], iter(rows)))
+    analysis = ResultDocument(
+        field=ObjectId(),
+        job_id=ObjectId(),
+        result_type="analysis",
+        version=1,
+        quality=profile.quality,
+        analysis=profile.analysis,
+    )
+    severities = {i.type: i.severity for i in profile.quality.issues}
+    assert severities["missing_values"] == "high" and severities["whitespace"] == "low"
+
+    report = build_rule_report(analysis, None)
+
+    # 같은 열(name)의 두 추천 모두 그 열의 가장 심각한 문제(결측 high)를 따른다
+    assert {r.priority for r in report.cleaning_recommendations} == {"high"}
