@@ -203,7 +203,10 @@ async def suggest_cleaning(service: Cleaning, file_id: str) -> ApiResponse[Clean
         CleaningSuggestions(
             file_id=file_id,
             based_on_version=analysis.version,
-            suggestions=[SuggestedRule(rule=s.rule, reason=s.reason) for s in suggestions],
+            suggestions=[
+                SuggestedRule(rule=s.rule, reason=s.reason, expected_changes=s.expected_changes)
+                for s in suggestions
+            ],
         )
     )
 

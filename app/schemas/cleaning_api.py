@@ -9,10 +9,14 @@ from app.schemas.result import ResultDocument, ResultType
 
 
 class SuggestedRule(ApiModel):
-    """추천 규칙 하나. rule은 그대로 /clean 요청의 rules에 넣을 수 있다."""
+    """추천 규칙 하나. rule은 그대로 /clean 요청의 rules에 넣을 수 있다.
+
+    expectedChanges는 예상 변경 건수(바뀌는 칸 수 또는 지워지는 행 수)다.
+    """
 
     rule: CleanRule
     reason: str
+    expected_changes: int
 
 
 class CleaningSuggestions(ApiModel):

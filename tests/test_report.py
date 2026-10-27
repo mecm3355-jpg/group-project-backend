@@ -9,7 +9,7 @@ import pytest
 from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr
 from pymongo import MongoClient
 
 from app.core.config import Settings
@@ -21,7 +21,12 @@ from app.schemas.result import QualityIssue, QualityResult, ResultDocument
 from app.services.job_handlers import HANDLERS
 from app.services.job_runner import JobRunner
 from app.services.llm import LlmClient
-from app.services.report_handler import PROMPT_VERSION, build_report_input, make_report_handler
+from app.services.report_handler import (
+    PROMPT_VERSION,
+    build_report_input,
+    make_report_handler,
+    without_raw_values,
+)
 from tests.conftest import TEST_URI, make_settings, requires_db
 from tests.test_analyze_flow import CSV, run_worker, upload
 from tests.test_llm import FakeBackend
@@ -65,6 +70,22 @@ def file_doc() -> FileDocument:
             preview=True, quality_check=True, cleaning=True, statistics=True, ai_summary=True
         ),
     )
+
+
+def test_report_input_drops_raw_values() -> None:
+    analysis: dict[str, JsonValue] = {
+        "format": "csv",
+        "topKeywords": [{"keyword": "홍길동", "count": 2}],
+        "statistics": {
+            "name": {"topValues": [{"value": "홍길동", "count": 2}]},
+            "age": {"min": 20, "max": 40, "mean": 30, "histogram": []},
+        },
+    }
+
+    assert without_raw_values(analysis) == {
+        "format": "csv",
+        "statistics": {"age": {"min": 20, "max": 40, "mean": 30, "histogram": []}},
+    }
 
 
 def test_report_input_excludes_file_name_and_masks_pii() -> None:

@@ -22,10 +22,11 @@ MODE_MAX_UNIQUE = 50
 
 @dataclass(frozen=True)
 class Suggestion:
-    """추천 규칙과 추천 이유."""
+    """추천 규칙, 추천 이유, 예상 변경 건수(바뀌는 칸 수 또는 지워지는 행 수)."""
 
     rule: CleanRule
     reason: str
+    expected_changes: int
 
 
 def _column_info(result: ResultDocument) -> dict[str, tuple[str, int]]:
@@ -52,7 +53,7 @@ def _column_info(result: ResultDocument) -> dict[str, tuple[str, int]]:
 
 
 def suggest_rules(result: ResultDocument) -> list[Suggestion]:
-    """품질 진단 결과의 문제마다 해결 규칙을 추천한다.
+    """품질 진단 결과의 문제마다 해결 규칙을 추천한다. 예상 변경 건수는 그 문제의 count다.
 
     - whitespace → trim_whitespace
     - duplicates → remove_duplicates(모든 열 기준)
@@ -70,6 +71,7 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                 Suggestion(
                     TrimWhitespaceRule(type="trim_whitespace", column=column),
                     f"{column} 필드에 앞뒤 공백이 있는 값이 {issue.count}개 있습니다.",
+                    issue.count,
                 )
             )
         elif issue.type == "duplicates":
@@ -82,6 +84,7 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                             type="remove_duplicates", columns=names[len(SOURCE_COLUMNS) :]
                         ),
                         f"출처 정보를 뺀 모든 열이 같은 중복 행이 {issue.count}개 있습니다.",
+                        issue.count,
                     )
                 )
             else:
@@ -89,6 +92,7 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                     Suggestion(
                         RemoveDuplicatesRule(type="remove_duplicates"),
                         f"모든 열이 같은 중복 행이 {issue.count}개 있습니다.",
+                        issue.count,
                     )
                 )
         elif issue.type == "missing_values" and column in columns:
@@ -101,5 +105,5 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                 reason = f"{column}의 결측치 {issue.count}개를 가장 많이 나온 값으로 채웁니다."
             else:
                 continue
-            suggestions.append(Suggestion(rule, reason))
+            suggestions.append(Suggestion(rule, reason, issue.count))
     return suggestions

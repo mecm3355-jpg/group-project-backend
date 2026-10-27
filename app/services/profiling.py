@@ -6,6 +6,7 @@
 
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 
@@ -16,6 +17,7 @@ from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
 from app.schemas.dataset import SOURCE_COLUMNS
 from app.schemas.result import QualityIssue, QualityResult, Severity
+from app.services.keywords import noun_tokens
 
 NUMBER_PATTERN = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$|^[+-]?\.\d+$")
 BOOLEAN_VALUES = {"true", "false"}
@@ -37,6 +39,14 @@ DATE_FORMATS = (
 DOMINANT_TYPE_RATIO = 0.9
 LOG_KEYWORDS = ("FATAL", "ERROR", "WARN", "INFO", "DEBUG")
 LOG_KEYWORD_PATTERN = re.compile(r"\b(FATAL|ERROR|WARN(?:ING)?|INFO|DEBUG)\b")
+# 값 종류가 이 수 이하인 문자열·불리언 열을 범주형으로 보고 값별 빈도를 낸다
+CATEGORY_MAX_UNIQUE = 50
+TOP_VALUES = 10
+HISTOGRAM_BINS = 10
+# TXT 핵심어 빈도: 상위 개수와 형태소 분석할 최대 줄 수(큰 파일에서 시간이 너무 걸리지 않게)
+TOP_KEYWORDS = 20
+KEYWORD_MAX_LINES = 20_000
+SCORE_BASIS = "점수 = 100 × 완전성 × 유일성 × 일관성 (소수점 버림, 잠정 기준)"
 
 
 def is_missing(value: Cell) -> bool:
@@ -127,7 +137,8 @@ class ColumnStats:
     # 통합 파일에서 그 열을 제공하지 않는 출처의 빈칸(결측이 아니라 해당 없음)
     not_applicable: int = 0
     whitespace: int = 0
-    uniques: set[str] = field(default_factory=set)
+    # 고유값별 개수(cell_key 기준). 고유값 수와 범주형 빈도에 쓴다
+    value_counts: Counter[str] = field(default_factory=Counter)
     type_counts: dict[str, int] = field(default_factory=dict)
     numbers: list[float] = field(default_factory=list)
     dates: list[datetime] = field(default_factory=list)
@@ -143,7 +154,7 @@ class ColumnStats:
             return
         if isinstance(value, str) and value != value.strip():
             self.whitespace += 1
-        self.uniques.add(cell_key(value))
+        self.value_counts[cell_key(value)] += 1
         kind, parsed = classify(value)
         self.type_counts[kind] = self.type_counts.get(kind, 0) + 1
         if isinstance(parsed, datetime):
@@ -198,6 +209,50 @@ def _round(value: float) -> float | int:
     return int(rounded) if rounded.is_integer() else rounded
 
 
+def _percent(part: float, whole: float) -> float:
+    """비율을 0~100 백분율(소수 첫째 자리)로 바꾼다. 분모가 0이면 100.
+
+    파라미터:
+        part: 좋은 쪽의 수(예: 채워진 칸)
+        whole: 전체 수
+    """
+    return round(100 * part / whole, 1) if whole else 100.0
+
+
+def histogram(numbers: list[float]) -> list[JsonValue]:
+    """숫자 목록을 같은 폭 구간(최대 10개)으로 나눠 구간별 개수를 센다.
+
+    마지막 구간은 최댓값을 포함한다. 값이 모두 같으면 구간 하나다.
+
+    파라미터:
+        numbers: 숫자 값 목록(비어 있지 않음)
+    """
+    low, high = min(numbers), max(numbers)
+    bins = 1 if low == high else min(HISTOGRAM_BINS, len(set(numbers)))
+    width = (high - low) / bins
+    counts = [0] * bins
+    for number in numbers:
+        index = bins - 1 if width == 0 else min(int((number - low) / width), bins - 1)
+        counts[index] += 1
+    return [
+        {
+            "start": _round(low + width * i),
+            "end": _round(high if i == bins - 1 else low + width * (i + 1)),
+            "count": count,
+        }
+        for i, count in enumerate(counts)
+    ]
+
+
+def top_values(counts: Counter[str]) -> list[JsonValue]:
+    """많이 나온 값 상위 10개와 개수를 돌려준다.
+
+    파라미터:
+        counts: 값별 개수
+    """
+    return [{"value": value, "count": count} for value, count in counts.most_common(TOP_VALUES)]
+
+
 @dataclass
 class Profile:
     """프로파일 결과. quality·analysis는 processing_results에 그대로 저장한다."""
@@ -218,8 +273,16 @@ def is_merged(columns: list[str]) -> bool:
 def profile_table(table: Table) -> Profile:
     """표 전체를 한 번 돌며 품질 문제와 열별 분석·통계를 계산한다.
 
-    품질 점수 = 100 × 채워진 칸 비율 × (1 − 중복 행 비율) × (1 − 길이 다른 행 비율)의 버림 (잠정).
+    품질 지표(0~100, 잠정):
+    - 완전성(completeness): 채워진 칸 비율
+    - 유일성(uniqueness): 1 − 중복 행 비율
+    - 유효성(validity): 1 − 열 타입과 다른 값 비율(채워진 칸 기준)
+    - 일관성(consistency): 1 − 열 개수가 머리글과 다른 행 비율
+    품질 점수 = 100 × 완전성 × 유일성 × 일관성의 버림(잠정, 가중치 미정이라 유효성은 아직 빼 둔다).
     버림이라 문제가 하나라도 있으면 100점이 되지 않는다.
+
+    통계: 숫자 열은 최솟값·최댓값·평균·구간별 분포(histogram), 날짜 열은 최솟값·최댓값,
+    값 종류가 50개 이하인 문자열·불리언 열은 값별 빈도 상위 10개(topValues).
 
     통합 데이터셋 파일이면:
     - 어떤 출처에서 값이 하나도 없는 열은 그 출처에는 "해당 없음"으로 보고 결측·점수에서 뺀다
@@ -360,11 +423,19 @@ def profile_table(table: Table) -> Profile:
     cells = sum(row_count - c.not_applicable for c in stats)
     filled = cells - sum(c.missing for c in stats)
     total_rows = row_count + empty_rows
+    mismatched = sum(c.mismatched() for c in stats)
+    ragged = min(table.ragged_row_count, total_rows)
+    metrics = {
+        "completeness": _percent(filled, cells),
+        "uniqueness": _percent(row_count - duplicates, row_count),
+        "validity": _percent(filled - mismatched, filled),
+        "consistency": _percent(total_rows - ragged, total_rows),
+    }
     score = 100.0
     if cells:
         score *= filled / cells
         score *= 1 - duplicates / row_count
-        score *= 1 - min(table.ragged_row_count, total_rows) / total_rows
+        score *= 1 - ragged / total_rows
 
     columns: list[JsonValue] = []
     statistics: dict[str, JsonValue] = {}
@@ -374,7 +445,7 @@ def profile_table(table: Table) -> Profile:
             "name": column.name,
             "inferredType": kind,
             "missingCount": column.missing,
-            "uniqueCount": len(column.uniques),
+            "uniqueCount": len(column.value_counts),
         }
         if merged:
             info["notApplicableCount"] = column.not_applicable
@@ -384,12 +455,15 @@ def profile_table(table: Table) -> Profile:
                 "min": _round(min(column.numbers)),
                 "max": _round(max(column.numbers)),
                 "mean": _round(sum(column.numbers) / len(column.numbers)),
+                "histogram": histogram(column.numbers),
             }
         elif kind == "date" and column.dates:
             statistics[column.name] = {
                 "min": min(column.dates).isoformat(),
                 "max": max(column.dates).isoformat(),
             }
+        elif kind in ("string", "boolean") and len(column.value_counts) <= CATEGORY_MAX_UNIQUE:
+            statistics[column.name] = {"topValues": top_values(column.value_counts)}
 
     analysis: dict[str, JsonValue] = {"format": table.format}
     if table.encoding is not None:
@@ -404,25 +478,46 @@ def profile_table(table: Table) -> Profile:
             "statistics": statistics,
         }
     )
-    return Profile(QualityResult(score=math.floor(score), issues=issues), analysis)
+    quality = QualityResult(
+        score=math.floor(score), issues=issues, metrics=metrics, score_basis=SCORE_BASIS
+    )
+    return Profile(quality, analysis)
 
 
 def profile_text(text: TextLines) -> Profile:
-    """텍스트 전체를 한 번 돌며 줄 수·빈 줄 수를 센다. 로그는 수준(ERROR 등)별 줄 수도 센다.
+    """텍스트 전체를 한 번 돌며 줄 수·빈 줄 수·중복 줄·끝 공백 줄을 센다.
+
+    로그는 수준(ERROR 등)별 줄 수를, TXT는 명사 핵심어 빈도 상위 20개(topKeywords)를 센다.
+    핵심어는 앞 20,000줄까지만 형태소 분석하며, 잘랐으면 keywordLineCount에 분석한 줄 수를 남긴다.
 
     파라미터:
         text: open_text로 연 텍스트(lines를 이 함수가 끝까지 읽는다)
     """
-    line_count = empty = 0
+    line_count = empty = duplicate = trailing = keyword_lines = 0
     counts = dict.fromkeys(LOG_KEYWORDS, 0)
+    keywords: Counter[str] = Counter()
+    seen: set[int] = set()  # 줄 내용의 해시(메모리를 아끼려고 문자열 대신)
     is_log = text.format == "log"
     for line in text.lines:
         line_count += 1
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             empty += 1
-        elif is_log and (match := LOG_KEYWORD_PATTERN.search(line)):
-            keyword = "WARN" if match.group(1).startswith("WARN") else match.group(1)
-            counts[keyword] += 1
+            continue
+        if line != line.rstrip():
+            trailing += 1
+        key = hash(stripped)
+        if key in seen:
+            duplicate += 1
+        else:
+            seen.add(key)
+        if is_log:
+            if match := LOG_KEYWORD_PATTERN.search(line):
+                keyword = "WARN" if match.group(1).startswith("WARN") else match.group(1)
+                counts[keyword] += 1
+        elif keyword_lines < KEYWORD_MAX_LINES:
+            keyword_lines += 1
+            keywords.update(noun_tokens(stripped))
 
     issues: list[QualityIssue] = []
     if empty:
@@ -435,6 +530,26 @@ def profile_text(text: TextLines) -> Profile:
                 message=f"빈 줄 {empty}개가 발견되었습니다.",
             )
         )
+    if duplicate:
+        issues.append(
+            QualityIssue(
+                type="duplicate_lines",
+                severity="low",
+                count=duplicate,
+                location=None,
+                message=f"앞에 나온 줄과 내용이 같은 줄 {duplicate}개가 발견되었습니다.",
+            )
+        )
+    if trailing:
+        issues.append(
+            QualityIssue(
+                type="trailing_whitespace",
+                severity="low",
+                count=trailing,
+                location=None,
+                message=f"끝에 공백이 있는 줄 {trailing}개가 발견되었습니다.",
+            )
+        )
     analysis: dict[str, JsonValue] = {
         "format": text.format,
         "encoding": text.encoding,
@@ -443,6 +558,12 @@ def profile_text(text: TextLines) -> Profile:
     }
     if is_log:
         analysis["keywordCounts"] = {k: v for k, v in counts.items() if v}
+    else:
+        analysis["topKeywords"] = [
+            {"keyword": word, "count": count} for word, count in keywords.most_common(TOP_KEYWORDS)
+        ]
+        if keyword_lines < line_count - empty:
+            analysis["keywordLineCount"] = keyword_lines
     return Profile(QualityResult(issues=issues), analysis)
 
 
@@ -450,6 +571,8 @@ def profile_document(document: DocumentText) -> Profile:
     """문서 전체를 한 번 돌며 글자 줄 수·글자 수를 센다. PDF는 글자 없는 페이지를 찾는다.
 
     OCR하지 못한 글자 없는 페이지는 "OCR 필요"로, OCR 신뢰도가 낮은 줄은 "검수 필요"로 알린다.
+    이미지는 형식·가로·세로·색상 모드(image)를 남기고, OCR이 없어 글자를 읽지 않았으면
+    method를 none으로 두고 ocr_not_available(low)로 알린다.
 
     파라미터:
         document: open_document로 연 문서(lines를 이 함수가 끝까지 읽는다)
@@ -459,8 +582,19 @@ def profile_document(document: DocumentText) -> Profile:
         line_count += 1
         characters += len(line.strip())
 
+    unread_image = document.image is not None and document.ocr_engine is None
     issues: list[QualityIssue] = []
-    if document.pages_without_text:
+    if unread_image:
+        issues.append(
+            QualityIssue(
+                type="ocr_not_available",
+                severity="low",
+                count=1,
+                location=None,
+                message="OCR이 설정되지 않아 이미지 속 글자는 읽지 않았습니다.",
+            )
+        )
+    elif document.pages_without_text:
         all_pages = document.pages_without_text == document.page_count
         issues.append(
             QualityIssue(
@@ -513,7 +647,14 @@ def profile_document(document: DocumentText) -> Profile:
             "lowConfidenceLines": document.ocr_low_confidence_lines,
         }
     else:
-        analysis["method"] = "text"
+        analysis["method"] = "none" if unread_image else "text"
+    if document.image is not None:
+        analysis["image"] = {
+            "format": document.image.format,
+            "width": document.image.width,
+            "height": document.image.height,
+            "mode": document.image.mode,
+        }
     if document.page_count is not None:
         analysis["pageCount"] = document.page_count
         analysis["pagesWithoutText"] = document.pages_without_text

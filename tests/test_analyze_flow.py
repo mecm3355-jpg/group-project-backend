@@ -1,10 +1,12 @@
 """업로드 → 워커 처리 → 품질 조회·미리보기·재처리 흐름. 실제 MongoDB 필요(임시 DB 자동)."""
 
 import asyncio
+import io
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.core.database import Mongo
 from app.services.job_handlers import HANDLERS
@@ -124,21 +126,33 @@ def test_document_preview_and_quality(db_client: TestClient) -> None:
     assert [i["type"] for i in quality["issues"]] == ["no_text_layer"]
 
 
-def test_image_without_ocr_fails_job_and_preview(db_client: TestClient) -> None:
-    # 테스트 설정은 OCR을 꺼 둔다(make_settings). 이미지는 OCR 없이는 읽을 수 없다
-    file_id = upload(db_client, "photo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+def test_image_without_ocr_keeps_metadata(db_client: TestClient) -> None:
+    # 테스트 설정은 OCR을 꺼 둔다(make_settings). OCR 없이도 이미지 메타데이터는 진단한다
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 20), "white").save(buffer, format="PNG")
+    file_id = upload(db_client, "photo.png", buffer.getvalue())
 
-    res = db_client.get(f"/api/v1/files/{file_id}/preview")
-    assert res.status_code == 503
-    assert res.json()["error"]["code"] == "OCR_NOT_AVAILABLE"
+    preview = db_client.get(f"/api/v1/files/{file_id}/preview").json()["data"]
+    assert (preview["kind"], preview["format"], preview["lines"]) == ("text", "image", [])
+
+    run_worker(db_client)
+    detail = db_client.get(f"/api/v1/files/{file_id}").json()["data"]
+    assert detail["status"] == "completed"
+    quality = db_client.get(f"/api/v1/files/{file_id}/quality").json()["data"]
+    assert [i["type"] for i in quality["issues"]] == ["ocr_not_available"]
+    analysis = db_client.get(f"/api/v1/files/{file_id}/analysis").json()["data"]["analysis"]
+    assert analysis["method"] == "none"
+    assert analysis["image"] == {"format": "PNG", "width": 40, "height": 20, "mode": "RGB"}
+
+
+def test_broken_image_fails_job(db_client: TestClient) -> None:
+    file_id = upload(db_client, "photo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
 
     run_worker(db_client)
     detail = db_client.get(f"/api/v1/files/{file_id}").json()["data"]
     job = db_client.get(f"/api/v1/jobs/{detail['lastJobId']}").json()["data"]
     assert detail["status"] == "failed"
-    assert job["status"] == "failed"
-    assert job["stage"] == "parsing"
-    assert job["error"]["code"] == "OCR_NOT_AVAILABLE"
+    assert (job["stage"], job["error"]["code"]) == ("parsing", "INVALID_FILE")
 
 
 @pytest.mark.parametrize("path", ["preview", "quality"])

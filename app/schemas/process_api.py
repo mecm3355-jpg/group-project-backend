@@ -22,6 +22,8 @@ class QualityReport(ApiModel):
     version: int
     score: int | None
     issues: list[QualityIssue]
+    metrics: dict[str, float] | None
+    score_basis: str | None
     created_at: datetime
 
     @classmethod
@@ -37,5 +39,7 @@ class QualityReport(ApiModel):
             version=doc.version,
             score=doc.quality.score,
             issues=doc.quality.issues,
+            metrics=doc.quality.metrics,
+            score_basis=doc.quality.score_basis,
             created_at=doc.create_at,
         )

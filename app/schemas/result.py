@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 
 from bson import ObjectId
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, model_serializer
 
 from app.schemas.mongo import MongoDocument, MongoModel, utc_now
 
@@ -21,10 +21,30 @@ class QualityIssue(MongoModel):
 
 
 class QualityResult(MongoModel):
-    """processing_results.quality — 데이터 품질 진단 결과. score는 예시에 없을 수 있다."""
+    """processing_results.quality — 데이터 품질 진단 결과. score는 예시에 없을 수 있다.
+
+    표 형식만 metrics(완전성·유일성·유효성·일관성, 0~100)와 scoreBasis(점수 계산 기준)를 채운다.
+    둘은 값이 없으면 저장하지 않는다(설계 파일 예시 형식 유지).
+    """
 
     score: int | None = None
     issues: list[QualityIssue] = Field(default_factory=list)
+    metrics: dict[str, float] | None = None
+    score_basis: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _drop_empty_extras(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        """기본 직렬화 결과에서 값이 없는 metrics·scoreBasis를 뺀다.
+
+        파라미터:
+            handler: pydantic 기본 직렬화 함수
+        """
+        data: dict[str, object] = handler(self)
+        # by_alias 여부에 따라 키가 score_basis 또는 scoreBasis다
+        for key in ("metrics", "score_basis", "scoreBasis"):
+            if key in data and data[key] is None:
+                del data[key]
+        return data
 
 
 class ResultDocument(MongoDocument):

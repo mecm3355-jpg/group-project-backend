@@ -50,8 +50,30 @@ SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이�
 LlmFactory = Callable[[Settings], LlmClient | None]
 
 
+def without_raw_values(analysis: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """분석 결과에서 원본 값이 그대로 든 항목(열별 topValues, 텍스트 topKeywords)을 뺀다.
+
+    이름·이메일 같은 칸 값이 LLM으로 나가지 않게 한다. 개수·숫자 통계는 남긴다.
+
+    파라미터:
+        analysis: processing_results.analysis
+    """
+    result = {k: v for k, v in analysis.items() if k != "topKeywords"}
+    statistics = analysis.get("statistics")
+    if isinstance(statistics, dict):
+        trimmed: dict[str, JsonValue] = {}
+        for name, stats in statistics.items():
+            if isinstance(stats, dict):
+                stats = {k: v for k, v in stats.items() if k != "topValues"}
+                if not stats:
+                    continue
+            trimmed[name] = stats
+        result["statistics"] = trimmed
+    return result
+
+
 def _summary_of(result: ResultDocument) -> dict[str, JsonValue]:
-    """결과 문서에서 리포트 입력으로 쓸 부분(품질·분석)을 꺼낸다.
+    """결과 문서에서 리포트 입력으로 쓸 부분(품질·분석)을 꺼낸다. 원본 값 항목은 뺀다.
 
     파라미터:
         result: 분석 또는 정제 결과 문서
@@ -59,7 +81,7 @@ def _summary_of(result: ResultDocument) -> dict[str, JsonValue]:
     return {
         "version": result.version,
         "quality": result.quality.model_dump(mode="json", by_alias=True),
-        "analysis": result.analysis,
+        "analysis": without_raw_values(result.analysis),
     }
 
 

@@ -122,6 +122,17 @@ def test_image_without_ocr_is_error(tmp_path: Path) -> None:
     assert info.value.code == "OCR_NOT_AVAILABLE"
 
 
+def test_image_without_ocr_can_open_for_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "photo"
+    Image.new("L", (40, 20), "white").save(path, format="JPEG")
+
+    with open_document(path, "jpg", allow_missing_ocr=True) as document:
+        assert list(document.entries) == []
+    assert document.image is not None
+    assert (document.image.format, document.image.width, document.image.height) == ("JPEG", 40, 20)
+    assert document.image.mode == "L"
+
+
 def test_broken_image_is_invalid(tmp_path: Path) -> None:
     path = tmp_path / "photo"
     path.write_bytes(b"\x89PNG\r\n\x1a\nbroken")

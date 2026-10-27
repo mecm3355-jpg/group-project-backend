@@ -3,7 +3,8 @@
 - 텍스트형 PDF·DOCX는 글자 층을 그대로 읽는다.
 - 글자 층이 없는 PDF 페이지와 이미지는 OCR 엔진이 있으면 300dpi로 렌더링해 OCR한다(PRD 7.6).
   OCR 엔진이 없으면 PDF는 글자 없는 페이지로 세어 품질 진단에서 "OCR 필요"로 알리고,
-  이미지는 읽을 수 없다는 오류를 낸다.
+  이미지는 읽을 수 없다는 오류를 낸다(품질 진단·미리보기는 allow_missing_ocr로 크기 정보만 읽는다).
+- 이미지는 형식·가로·세로·색상 모드를 함께 남긴다.
 - 줄마다 원문 위치(PDF·이미지 page, DOCX paragraph·tableRow)와 OCR 신뢰도를 남긴다
   (complaints.sourceLocator·extractionConfidence, PRD 7.4).
 민원 단위 분리는 app/processors/splitter.py가 맡는다.
@@ -50,6 +51,16 @@ class OcrOptions:
     fix_spacing: bool = True
 
 
+@dataclass(frozen=True)
+class ImageInfo:
+    """이미지 메타데이터: 실제 형식(PNG·JPEG), 가로·세로 픽셀, 색상 모드(RGB 등)."""
+
+    format: str | None
+    width: int
+    height: int
+    mode: str
+
+
 @dataclass
 class DocumentText:
     """읽어 들인 문서. entries는 빈 줄을 뺀 글자 줄의 반복자(한 번만 돌 수 있음).
@@ -70,6 +81,8 @@ class DocumentText:
     ocr_low_confidence_lines: int = 0
     low_confidence: float = 0.6
     ocr_low_confidence_pages: list[int] = field(default_factory=list)
+    # 이미지 파일일 때만 있다
+    image: ImageInfo | None = None
 
     @property
     def lines(self) -> Iterator[str]:
@@ -230,14 +243,20 @@ def _open_pdf(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
 
 
 @contextmanager
-def _open_image(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
-    """이미지(PNG·JPG)를 OCR로 읽는다. OCR 엔진이 없으면 AppError(OCR_NOT_AVAILABLE).
+def _open_image(
+    path: Path, ocr: OcrOptions | None, allow_missing_ocr: bool
+) -> Iterator[DocumentText]:
+    """이미지(PNG·JPG)를 OCR로 읽는다.
+
+    OCR 엔진이 없으면 AppError(OCR_NOT_AVAILABLE). allow_missing_ocr이면 오류 대신
+    글자 없이(ocr_engine None) 메타데이터만 채운다.
 
     파라미터:
         path: 파일 경로
         ocr: OCR 설정
+        allow_missing_ocr: OCR 엔진이 없어도 메타데이터만으로 열지 여부
     """
-    if ocr is None:
+    if ocr is None and not allow_missing_ocr:
         raise AppError(
             "OCR_NOT_AVAILABLE",
             "이미지를 읽으려면 OCR(Tesseract)이 필요합니다. 설치·설정(TESSERACT_*)을 확인하세요.",
@@ -248,12 +267,18 @@ def _open_image(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
         image.load()
     except (UnidentifiedImageError, OSError) as exc:
         raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    info = ImageInfo(image.format, image.width, image.height, image.mode)
+    if ocr is None:
+        image.close()
+        yield DocumentText("image", iter(()), page_count=1, image=info)
+        return
     result = DocumentText(
         "image",
         iter(()),
         page_count=1,
         ocr_engine=ocr.engine.name,
         low_confidence=ocr.low_confidence,
+        image=info,
     )
     try:
 
@@ -272,7 +297,10 @@ def _open_image(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
 
 @contextmanager
 def open_document(
-    path: Path, extension: str, ocr: OcrOptions | None = None
+    path: Path,
+    extension: str,
+    ocr: OcrOptions | None = None,
+    allow_missing_ocr: bool = False,
 ) -> Iterator[DocumentText]:
     """확장자에 맞는 추출기로 문서를 연다. with 블록 안에서 document.entries를 끝까지 읽는다.
 
@@ -280,13 +308,15 @@ def open_document(
         path: 파일 경로
         extension: docx, pdf, png, jpg, jpeg 중 하나
         ocr: OCR 설정(스캔 PDF·이미지용). None이면 OCR하지 않는다
+        allow_missing_ocr: OCR 없이 이미지를 열 때 오류 대신 메타데이터만 채울지 여부
+            (품질 진단·미리보기용. 민원 추출처럼 글자가 꼭 필요한 곳은 False)
     """
     if extension == "docx":
         opener = _open_docx(path)
     elif extension == "pdf":
         opener = _open_pdf(path, ocr)
     elif extension in IMAGE_EXTENSIONS:
-        opener = _open_image(path, ocr)
+        opener = _open_image(path, ocr, allow_missing_ocr)
     else:
         raise AppError("NOT_DOCUMENT", f"{extension} 파일은 문서로 읽을 수 없습니다.", 422)
     with opener as document:

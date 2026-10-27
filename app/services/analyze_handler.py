@@ -29,7 +29,7 @@ def build_profile(path: Path, extension: str, ocr: OcrOptions | None = None) -> 
         with open_text(path, extension) as text:
             return profile_text(text)
     if extension in DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS:
-        with open_document(path, extension, ocr) as document:
+        with open_document(path, extension, ocr, allow_missing_ocr=True) as document:
             return profile_document(document)
     raise AppError(
         "ANALYSIS_NOT_SUPPORTED",

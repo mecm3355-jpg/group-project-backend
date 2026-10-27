@@ -4,9 +4,17 @@ from datetime import datetime
 import pytest
 from pydantic import JsonValue
 
+from app.processors.document import DocumentText, ImageInfo
 from app.processors.tabular import Cell, Table
 from app.processors.text import TextLines
-from app.services.profiling import classify, parse_number, profile_table, profile_text
+from app.services.profiling import (
+    classify,
+    histogram,
+    parse_number,
+    profile_document,
+    profile_table,
+    profile_text,
+)
 
 
 def make_table(columns: list[str], rows: list[list[Cell]], ragged: int = 0) -> Table:
@@ -92,7 +100,19 @@ def test_profile_table_matches_schema_example_shape() -> None:
         {"name": "date", "inferredType": "date", "missingCount": 0, "uniqueCount": 3},
     ]
     assert analysis["statistics"] == {
-        "price": {"min": 1000, "max": 50000, "mean": 18750},
+        "email": {
+            "topValues": [{"value": "b@x.com", "count": 2}, {"value": "a@x.com", "count": 1}]
+        },
+        "price": {
+            "min": 1000,
+            "max": 50000,
+            "mean": 18750,
+            "histogram": [
+                {"start": 1000, "end": 17333.3333, "count": 3},
+                {"start": 17333.3333, "end": 33666.6667, "count": 0},
+                {"start": 33666.6667, "end": 50000, "count": 1},
+            ],
+        },
         "date": {"min": "2026-01-01T00:00:00", "max": "2026-03-01T00:00:00"},
     }
 
@@ -107,6 +127,13 @@ def test_profile_table_matches_schema_example_shape() -> None:
     assert issues["empty_rows"].count == 1
     # 100 × (11/12 채움) × (1 − 1/4 중복)
     assert profile.quality.score == 68  # floor(68.75)
+    assert profile.quality.metrics == {
+        "completeness": 91.7,  # 11/12
+        "uniqueness": 75.0,  # 1 − 1/4
+        "validity": 100.0,
+        "consistency": 100.0,
+    }
+    assert profile.quality.score_basis
 
 
 def test_profile_table_detects_type_mismatch() -> None:
@@ -117,6 +144,8 @@ def test_profile_table_detects_type_mismatch() -> None:
 
     issue = next(i for i in profile.quality.issues if i.type == "type_mismatch")
     assert (issue.location, issue.count) == ("age", 1)
+    assert profile.quality.metrics is not None
+    assert profile.quality.metrics["validity"] == 95.0  # 20칸 중 1칸이 숫자가 아님
     assert profile.analysis["columns"] == [
         {"name": "age", "inferredType": "number", "missingCount": 0, "uniqueCount": 20}
     ]
@@ -170,6 +199,64 @@ def test_profile_txt_has_no_keyword_counts() -> None:
 
     assert "keywordCounts" not in profile.analysis
     assert profile.quality.issues == []
+
+
+def test_profile_txt_counts_duplicates_whitespace_and_keywords() -> None:
+    text = TextLines(
+        "txt",
+        "utf-8",
+        lines(
+            ["가로등이 고장났습니다", "도로 파손 신고 ", "가로등이 고장났습니다", "", "가로등 점검"]
+        ),
+    )
+
+    profile = profile_text(text)
+
+    issues = {i.type: i.count for i in profile.quality.issues}
+    assert issues == {"empty_lines": 1, "duplicate_lines": 1, "trailing_whitespace": 1}
+    keywords = profile.analysis["topKeywords"]
+    assert isinstance(keywords, list)
+    assert keywords[0] == {"keyword": "가로등", "count": 3}
+    assert "keywordLineCount" not in profile.analysis
+
+
+def test_profile_log_has_no_top_keywords() -> None:
+    profile = profile_text(TextLines("log", "utf-8", lines(["INFO a", "INFO a"])))
+
+    assert "topKeywords" not in profile.analysis
+    assert [i.type for i in profile.quality.issues] == ["duplicate_lines"]
+
+
+def test_free_text_column_has_no_top_values() -> None:
+    rows: list[list[Cell]] = [[f"서술 {i}"] for i in range(51)]
+
+    profile = profile_table(make_table(["memo"], rows))
+
+    assert profile.analysis["statistics"] == {}
+
+
+def test_histogram_single_value_and_last_bin_includes_max() -> None:
+    assert histogram([5.0, 5.0]) == [{"start": 5, "end": 5, "count": 2}]
+    bins = histogram([0.0, 1.0, 2.0, 10.0])
+    assert sum(b["count"] for b in bins if isinstance(b, dict) and isinstance(b["count"], int)) == 4
+    assert bins[-1] == {"start": 7.5, "end": 10, "count": 1}
+
+
+def test_image_without_ocr_profile_has_metadata() -> None:
+    document = DocumentText(
+        "image", iter(()), page_count=1, image=ImageInfo("JPEG", 640, 480, "RGB")
+    )
+
+    profile = profile_document(document)
+
+    assert [i.type for i in profile.quality.issues] == ["ocr_not_available"]
+    assert profile.analysis["method"] == "none"
+    assert profile.analysis["image"] == {
+        "format": "JPEG",
+        "width": 640,
+        "height": 480,
+        "mode": "RGB",
+    }
 
 
 def test_merged_table_excludes_structural_missing_and_source_columns() -> None:

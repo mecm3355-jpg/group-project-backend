@@ -42,6 +42,9 @@ def test_suggest_rules_from_quality_issues() -> None:
     assert {"type": "fill_missing", "column": "age", "strategy": "median"} in rules
     assert {"type": "fill_missing", "column": "city", "strategy": "mode"} in rules
     assert all(reason for _, reason in suggested)
+    changes = {s.rule.type: s.expected_changes for s in suggest_rules(result)}
+    assert changes["trim_whitespace"] == 3
+    assert changes["remove_duplicates"] == 1
 
 
 def test_merged_file_dedupe_ignores_source_columns() -> None:

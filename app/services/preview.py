@@ -65,7 +65,7 @@ def build_preview(
             )
     if extension in DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS:
         # 문서는 빈 줄을 뺀 글자 줄을 보여준다. DOCX 표의 행은 칸을 탭으로 이은 한 줄이다
-        with open_document(path, extension, ocr) as document:
+        with open_document(path, extension, ocr, allow_missing_ocr=True) as document:
             return FilePreview(
                 file_id=file_id,
                 kind="text",
