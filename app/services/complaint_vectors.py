@@ -22,6 +22,8 @@ def vectors_key(file_id: ObjectId, job_id: ObjectId) -> str:
         file_id: 원본 파일 _id
         job_id: 민원 분석 작업 _id
     """
+    # 작업마다 폴더를 나눠 재분석해도 이전 작업의 벡터를 덮어쓰지 않는다. 이전 작업 민원의
+    # 중심 계산·소급 배정이 그 작업의 벡터 파일을 그대로 읽을 수 있어야 하기 때문이다
     return f"{results_dir_key(file_id)}/complaints/{job_id}/embeddings.npy"
 
 
@@ -51,10 +53,13 @@ def save_vectors(
         complaint_ids: vectors 행 순서의 민원 _id
         vectors: 정규화된 임베딩
     """
+    # 민원 수 × 1024차원 실수는 문서 크기 제한(16MB)·조회 비용 면에서 MongoDB에 두기 무거워
+    # 파일로 둔다(PRD 7.4). 개수가 적은 카테고리 중심만 categories.centroid에 넣는다
     key = vectors_key(file_id, job_id)
     path = storage.path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, np.asarray(vectors, dtype=np.float32))
+    # 행 번호만으로는 어느 민원의 벡터인지 알 수 없으므로 같은 순서의 _id 목록을 함께 둔다
     storage.write_text(vector_ids_key(file_id, job_id), json.dumps([str(i) for i in complaint_ids]))
     return key
 
@@ -68,6 +73,7 @@ def load_vectors(
         storage: 저장소
         sources: 읽을 민원과 그 민원을 만든 파일·작업
     """
+    # 같은 작업에서 나온 민원끼리 묶어 벡터 파일을 작업당 한 번만 읽는다
     by_job: dict[tuple[ObjectId, ObjectId], set[ObjectId]] = {}
     for complaint_id, file_id, job_id in sources:
         by_job.setdefault((file_id, job_id), set()).add(complaint_id)
@@ -75,6 +81,7 @@ def load_vectors(
     for (file_id, job_id), wanted in by_job.items():
         path = storage.path(vectors_key(file_id, job_id))
         ids_path = storage.path(vector_ids_key(file_id, job_id))
+        # 산출물이 지워졌거나 저장 전에 실패한 작업은 건너뛴다. 빠진 민원은 호출 쪽에서 판단한다
         if not path.is_file() or not ids_path.is_file():
             continue
         matrix = np.load(path)

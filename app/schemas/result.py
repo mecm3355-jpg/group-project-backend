@@ -7,15 +7,18 @@ from pydantic import Field, JsonValue, SerializerFunctionWrapHandler, model_seri
 from app.schemas.mongo import MongoDocument, MongoModel, utc_now
 
 ResultType = Literal["analysis", "cleaning", "report"]
+# schema.md 예시에 나온 심각도 값
 Severity = Literal["low", "medium", "high"]
 
 
 class QualityIssue(MongoModel):
     """processing_results.quality.issues의 항목(설계 파일 예시 형식)."""
 
+    # missing_values·duplicates·empty_lines 등. 형식별 진단이 늘어날 수 있어 str로 둔다
     type: str
     severity: Severity
     count: int
+    # 문제가 있는 열 이름 등. 파일 전체에 해당하면(예: 중복 행) None
     location: str | None = None
     message: str
 
@@ -27,6 +30,7 @@ class QualityResult(MongoModel):
     둘은 값이 없으면 저장하지 않는다(설계 파일 예시 형식 유지).
     """
 
+    # 0~100 품질 점수. 텍스트 예시처럼 점수 없이 이슈만 있는 형식이 있어 선택
     score: int | None = None
     issues: list[QualityIssue] = Field(default_factory=list)
     metrics: dict[str, float] | None = None
@@ -39,6 +43,7 @@ class QualityResult(MongoModel):
         파라미터:
             handler: pydantic 기본 직렬화 함수
         """
+        # 기본 직렬화를 먼저 거쳐 별칭·중첩 모델 처리는 pydantic에 맡기고, 빈 키만 지운다
         data: dict[str, object] = handler(self)
         # by_alias 여부에 따라 키가 score_basis 또는 scoreBasis다
         for key in ("metrics", "score_basis", "scoreBasis"):
@@ -58,8 +63,10 @@ class ResultDocument(MongoDocument):
     field: ObjectId
     job_id: ObjectId
     result_type: ResultType
+    # 파일·결과 종류별 1부터 매기는 버전(정제 전후를 버전으로 구분해 보관)
     version: int = Field(ge=1)
     quality: QualityResult = Field(default_factory=QualityResult)
+    # JsonValue: BSON에 그대로 저장할 수 있는 값만 받도록 해 Any 사용을 피한다
     analysis: dict[str, JsonValue] = Field(default_factory=dict)
     cleaning: dict[str, JsonValue] = Field(default_factory=dict)
     ai: dict[str, JsonValue] = Field(default_factory=dict)

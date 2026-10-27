@@ -11,11 +11,13 @@ class CategoryRepository(BaseRepository[CategoryDocument]):
 
     COLLECTION = "categories"
     INDEXES = [
+        # 체계 버전마다 같은 categoryId 문서가 하나씩 있으므로 (categoryId, version)이 유일해야 한다
         IndexModel(
             [("categoryId", ASCENDING), ("version", ASCENDING)],
             name="categoryId_version",
             unique=True,
         ),
+        # active만 고르는 목록 조회와 대분류(group)별 조회용
         IndexModel([("status", ASCENDING)], name="status"),
         IndexModel([("group", ASCENDING)], name="group"),
     ]
@@ -33,6 +35,7 @@ class CategoryRepository(BaseRepository[CategoryDocument]):
 
         파라미터: 없음
         """
+        # 버전은 승인할 때마다 올라가므로 가장 큰 version이 현재 체계다
         found = await self._find({}, [("version", DESCENDING)], limit=1)
         return found[0].version if found else 0
 
@@ -47,6 +50,7 @@ class CategoryRepository(BaseRepository[CategoryDocument]):
         """
         query: dict[str, object] = {"version": version}
         if active_only:
+            # 병합·분할(merged·split)된 카테고리는 이력으로만 남기고 배정 대상에서 뺀다
             query["status"] = "active"
         return await self._find(query, [("categoryId", ASCENDING)])
 
@@ -65,5 +69,7 @@ class CategoryRepository(BaseRepository[CategoryDocument]):
 
         파라미터: 없음
         """
+        # categoryId는 CAT-0012처럼 자릿수를 0으로 채우므로 문자열 정렬이 번호 순서와 같다.
+        # 버전과 무관하게 전체에서 찾아 지운 번호를 다시 쓰지 않게 한다
         found = await self._find({}, [("categoryId", DESCENDING)], limit=1)
         return int(found[0].category_id.split("-")[-1]) if found else 0

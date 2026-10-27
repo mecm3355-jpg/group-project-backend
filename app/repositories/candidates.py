@@ -14,6 +14,7 @@ class CandidateRepository(BaseRepository[CandidateDocument]):
 
     COLLECTION = "category_candidates"
     INDEXES = [
+        # 어느 분석 작업이 만든 후보인지 찾기(jobId), 월별 조회(period), 승인 화면의 결정별 조회용
         IndexModel([("jobId", ASCENDING)], name="jobId"),
         IndexModel([("period", ASCENDING)], name="period"),
         IndexModel([("decision", ASCENDING)], name="decision"),
@@ -41,6 +42,7 @@ class CandidateRepository(BaseRepository[CandidateDocument]):
             query["decision"] = decision
         if period is not None:
             query["period"] = period
+        # 건수가 많은 후보일수록 새 카테고리로 만들 가치가 크므로 먼저 보여 준다
         return await self._find(query, [("size", DESCENDING), ("createdAt", DESCENDING)])
 
     async def delete_pending(self) -> list[ObjectId]:
@@ -51,6 +53,7 @@ class CandidateRepository(BaseRepository[CandidateDocument]):
 
         파라미터: 없음
         """
+        # 지운 _id를 돌려줘야 하므로 먼저 읽고 지운다(서비스가 그 후보를 가리키던 참조를 정리)
         pending = [doc.id for doc in await self._find({"decision": "pending"}, [])]
         if pending:
             await self.collection.delete_many({"_id": {"$in": pending}})
@@ -77,12 +80,14 @@ class CandidateRepository(BaseRepository[CandidateDocument]):
             merged_into: 합친 기존 categoryId
         """
         result = await self.collection.update_one(
+            # 조건에 pending을 넣어 두 사람이 동시에 결정해도 먼저 기록한 한 명만 반영되게 한다
             {"_id": candidate_id, "decision": "pending"},
             {
                 "$set": {
                     "decision": decision,
                     "decidedBy": decided_by,
                     "decidedAt": decided_at,
+                    # 결정 종류에 맞지 않는 쪽은 None으로 덮어 이전 값이 남지 않게 한다
                     "categoryId": category_id,
                     "mergedIntoCategoryId": merged_into,
                 }

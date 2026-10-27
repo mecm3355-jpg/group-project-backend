@@ -9,8 +9,10 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app.core.database import Document
 from app.schemas.mongo import MongoDocument
 
+# 저장소마다 다루는 문서 모델. 조회 결과를 dict가 아닌 검증된 모델로 돌려주기 위한 형 변수
 M = TypeVar("M", bound=MongoDocument)
 
+# (필드명, 1 또는 -1). dict는 정렬 순서가 의미를 가지므로 순서가 보장되는 목록으로 받는다
 SortSpec = Sequence[tuple[str, int]]
 
 
@@ -21,6 +23,7 @@ class BaseRepository(Generic[M]):
     """
 
     COLLECTION: ClassVar[str]
+    # 기본은 인덱스 없음. 하위 클래스가 조회 패턴에 맞춰 정의한다(CLAUDE.md DB 인덱스 규칙)
     INDEXES: ClassVar[list[IndexModel]] = []
 
     def __init__(self, db: AsyncDatabase[Document], model: type[M]) -> None:
@@ -39,6 +42,7 @@ class BaseRepository(Generic[M]):
         파라미터: 없음
         """
         if self.INDEXES:
+            # 이름·정의가 같은 인덱스가 있으면 MongoDB가 건너뛰므로 매번 호출해도 된다
             await self.collection.create_indexes(self.INDEXES)
 
     async def insert(self, doc: M) -> M:
@@ -47,6 +51,7 @@ class BaseRepository(Generic[M]):
         파라미터:
             doc: 저장할 문서 모델
         """
+        # _id를 모델에서 미리 만들어 두므로 insert 결과의 inserted_id를 다시 읽을 필요가 없다
         await self.collection.insert_one(doc.to_document())
         return doc
 
@@ -56,6 +61,7 @@ class BaseRepository(Generic[M]):
         파라미터:
             docs: 저장할 문서 모델 목록
         """
+        # pymongo는 빈 목록 insert_many를 오류로 처리하므로 먼저 걸러낸다
         if docs:
             await self.collection.insert_many([doc.to_document() for doc in docs])
 
@@ -66,6 +72,7 @@ class BaseRepository(Generic[M]):
             doc_id: 찾을 문서의 _id
         """
         raw = await self.collection.find_one({"_id": doc_id})
+        # DB 문서를 모델로 검증해 필드 누락·타입 이상을 읽는 시점에 바로 드러낸다
         return None if raw is None else self._model.model_validate(raw)
 
     async def _find(
@@ -86,6 +93,7 @@ class BaseRepository(Generic[M]):
         cursor = self.collection.find(dict(query))
         if sort:  # 정렬 조건이 없으면 저장 순서 그대로(pymongo는 빈 정렬을 받지 않는다)
             cursor = cursor.sort(list(sort))
+        # limit 0은 pymongo에서 '제한 없음'이라 기본값으로 그대로 넘겨도 된다
         cursor = cursor.skip(skip).limit(limit)
         return [self._model.model_validate(raw) async for raw in cursor]
 
@@ -96,6 +104,7 @@ class BaseRepository(Generic[M]):
             field: 묶을 필드의 MongoDB 이름(예: status)
         """
         pipeline: list[Document] = [
+            # 값이 없거나 null인 문서는 키로 쓸 수 없으므로 문자열인 것만 센다
             {"$match": {field: {"$type": "string"}}},
             {"$group": {"_id": f"${field}", "count": {"$sum": 1}}},
         ]
@@ -103,6 +112,7 @@ class BaseRepository(Generic[M]):
         counts: dict[str, int] = {}
         async for row in cursor:
             count = row["count"]
+            # Document 값은 object라 int임을 확인해 타입을 좁힌다
             if isinstance(count, int):
                 counts[str(row["_id"])] = count
         return counts
@@ -114,4 +124,5 @@ class BaseRepository(Generic[M]):
             doc_id: 지울 문서의 _id
         """
         result = await self.collection.delete_one({"_id": doc_id})
+        # _id 조건이라 많아야 1건. 0이면 이미 지워졌거나 없던 문서
         return result.deleted_count == 1

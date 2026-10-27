@@ -16,18 +16,25 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
+# 치환 표지와 횟수 집계에 함께 쓰는 대상 이름. 표지가 "[전화]"처럼 종류만 남겨
+# 마스킹 뒤에도 "전화번호가 있던 민원"이라는 정보는 분석에 쓸 수 있다
 PII_TYPES = ("식별번호", "전화", "이메일", "차량", "인명", "상세주소")
 
 # 주민등록번호: 생년월일 6자리 + 성별 자리(1~4) + 6자리
+# 앞뒤에 숫자가 붙지 않게 막아 더 긴 숫자열(주문번호 등)의 일부를 잘못 가리지 않는다
 RESIDENT_ID = re.compile(r"(?<!\d)\d{6}\s?-\s?[1-4]\d{6}(?!\d)")
+# 이메일은 다른 패턴과 겹치지 않도록 가장 먼저 치환한다(아이디 속 숫자가 전화로 잡히지 않게)
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # 휴대전화·지역번호 전화, 대표번호(15xx·16xx·18xx-xxxx)
+# 지역번호는 실제 쓰이는 앞자리(02, 031~064, 070, 050x)만 받아 일반 숫자열 오탐을 줄인다.
+# 구분자는 -, ., 공백, 괄호를 받는다("(054)270-1234"처럼 민원 본문에 흔한 표기)
 PHONE = re.compile(
     r"(?<!\d)(?:0(?:1[016789]|2|[3-6][1-5]|70|50\d?)[-.\s)]?\d{3,4}[-.\s]?\d{4}"
     r"|1[568]\d{2}-\d{4})(?!\d)"
 )
 # 계좌번호: 하이픈으로 이어진 숫자 묶음 3~4개, 숫자 합계 10자리 이상(날짜 2026-07-14 제외)
 ACCOUNT_CANDIDATE = re.compile(r"(?<![\d-])\d{2,6}(?:-\d{2,8}){2,3}(?![\d-])")
+# 은행 계좌번호는 대부분 10자리 이상이고, 날짜(8자리)·짧은 문서번호는 그보다 짧다
 ACCOUNT_MIN_DIGITS = 10
 # 차량번호: (지역명) + 2~3자리 + 용도 한글 1자 + 4자리 (예: 12가3456, 서울 34나 5678)
 VEHICLE = re.compile(
@@ -35,10 +42,13 @@ VEHICLE = re.compile(
     r"[가나다라마거너더러머버서어저고노도로모보소오조구누두루무부수우주아바사자배하허호]"
     r"\s?\d{4}(?!\d)"
 )
+# 이름 후보의 첫 글자로 받을 성씨. 아무 한글 2~3자나 이름으로 보면 "담당 과장"의 "담당" 같은
+# 일반 낱말까지 가려지므로, 흔한 성으로 시작하는 경우만 본다
 SURNAMES = (
     "김이박최정강조윤장임한오서신권황안송류전홍고문양손배백허유남심노하곽성차주우구민진나지엄채원"
     "천방공현함변염여추도소석선설마길연위표명기반왕금옥육인맹제모탁국어은봉경편용예봉"
 )
+# 성 1자 + 이름 1~2자(두 글자 성·외자 이름 일부는 놓칠 수 있다 — 모듈 설명의 한계)
 NAME = rf"[{SURNAMES}][가-힣]{{1,2}}"
 # "홍길동 주무관", "김철수씨" — 이름 뒤 직함·호칭(뒤에 조사가 붙어도 된다)
 TITLED_NAME = re.compile(
@@ -57,7 +67,10 @@ ROAD_ADDRESS = re.compile(
 LOT_ADDRESS = re.compile(
     r"((?<![가-힣])[가-힣]+(?:동|리|가)\s)(?:산\s?)?\d+(?:-\d+)?(?:\s?번지)?(?![\d가-힣.:/])"
 )
+# "번지"가 붙은 숫자는 동 이름이 앞에 없어도 지번이 분명하다
 LOT_NUMBER = re.compile(r"(?<!\d)(?:산\s?)?\d+(?:-\d+)?\s?번지")
+# 아파트 동·호수("101동 1203호")와 호수만 있는 경우("302호"). 뒤에 한글이 붙으면("3호선",
+# "1호기") 주소가 아니므로 제외한다
 UNIT = re.compile(r"(?<!\d)\d+\s?동\s?\d+\s?호(?![가-힣])|(?<![\d가-힣])\d{2,4}\s?호(?![가-힣])")
 
 
@@ -86,6 +99,7 @@ def _sub(pattern: re.Pattern[str], replacement: str, label: str, result: MaskRes
         label: 대상 이름(PII_TYPES 중 하나)
         result: 마스킹 중인 결과(본문과 횟수가 바뀐다)
     """
+    # subn으로 치환과 횟수 세기를 한 번에 한다(점검 기록과 find_pii가 이 횟수를 쓴다)
     result.text, n = pattern.subn(replacement, result.text)
     if n:
         result.counts[label] += n
@@ -99,8 +113,14 @@ def _mask_accounts(result: MaskResult) -> None:
     """
 
     def replace(match: re.Match[str]) -> str:
-        """후보 하나를 판정해 치환 문자열을 돌려준다."""
+        """후보 하나를 판정해 치환 문자열을 돌려준다.
+
+        파라미터:
+            match: ACCOUNT_CANDIDATE에 맞은 부분
+        """
+        # 정규식만으로는 자릿수 합계를 셀 수 없어 함수로 판정한다
         digits = sum(c.isdigit() for c in match.group(0))
+        # 짧은 묶음은 날짜·문서번호일 가능성이 커서 원문을 그대로 돌려준다
         if digits < ACCOUNT_MIN_DIGITS:
             return match.group(0)
         result.counts["식별번호"] += 1
@@ -118,15 +138,22 @@ def mask_text(text: str) -> MaskResult:
         text: 마스킹할 원문
     """
     result = MaskResult(text)
+    # 순서가 결과를 바꾼다. 앞에서 치환한 부분은 [표지]가 되어 뒤 패턴에 다시 걸리지 않는다
     _sub(EMAIL, "[이메일]", "이메일", result)
+    # 주민등록번호를 계좌·전화보다 먼저: 숫자 묶음이 다른 패턴에 걸려 종류가 틀리게 세지지 않게
     _sub(RESIDENT_ID, "[식별번호]", "식별번호", result)
     _sub(PHONE, "[전화]", "전화", result)
+    # 계좌번호는 전화번호 뒤: 하이픈 묶음 패턴이 넓어 전화번호까지 계좌로 셀 수 있다
     _mask_accounts(result)
     _sub(VEHICLE, "[차량]", "차량", result)
+    # 주소는 좁은 패턴(동·호수, 번지)부터 지워 도로명·지번 패턴이 숫자를 덜 먹게 한다
     _sub(UNIT, "[상세주소]", "상세주소", result)
     _sub(LOT_NUMBER, "[상세주소]", "상세주소", result)
+    # 도로명·동 이름은 \1로 남긴다(행정동 단위 지역 분석은 해야 하므로 번호만 가린다)
     _sub(ROAD_ADDRESS, r"\1 [상세주소]", "상세주소", result)
     _sub(LOT_ADDRESS, r"\1[상세주소]", "상세주소", result)
+    # 이름은 숫자를 쓰지 않아 앞 패턴과 겹치지 않으므로 마지막에 둔다.
+    # 직함·표지는 남겨 "주무관이 답변함" 같은 문맥은 분석에 쓸 수 있게 한다
     _sub(TITLED_NAME, r"[인명]\2\3", "인명", result)
     _sub(LABELED_NAME, r"\1[인명]", "인명", result)
     return result
@@ -138,4 +165,7 @@ def find_pii(text: str) -> list[str]:
     파라미터:
         text: 검사할 본문(마스킹본이어야 한다)
     """
+    # 검사 기준을 마스킹과 똑같이 맞추려고 mask_text를 한 번 더 돌려 치환이 생기는지 본다.
+    # 이미 마스킹한 본문이면 0건이어야 하고, 1건이라도 나오면 어딘가 마스킹을 빠뜨린 것이다.
+    # [표지]는 어느 패턴에도 맞지 않아 다시 세지 않는다
     return sorted(mask_text(text).counts)

@@ -37,9 +37,11 @@ class ComplaintAnalysisRequest(ApiModel):
     - TXT: 빈 줄로 나눈다
     """
 
+    # 분석 종류. 지금은 민원 분석뿐이며, 요청 본문만 보고 어떤 분석인지 알 수 있게 둔다
     type: Literal["complaint"] = "complaint"
     mapping: FieldMapping = Field(default_factory=FieldMapping)
     constants: FieldConstants = Field(default_factory=FieldConstants)
+    # 규칙 이름만 받고 정규식은 받지 않는다: 요청으로 임의 패턴을 실행하지 않기 위함
     split_rule: str | None = Field(default=None, max_length=50)
     # 속성 추출 방식. llm은 마스킹본을 fast 배포로 보낸다. 기본 auto는 LLM이 설정돼 있으면
     # llm(사용자 결정 2026-10-26), 없으면 rule로 분석한다(LLM 없이도 동작, 2026-10-26)
@@ -62,8 +64,10 @@ class AnalysisResult(ApiModel):
     job_id: str
     version: int
     quality: QualityResult
+    # 추출 정보와 함께, 민원 분석이면 analysis.complaint에 분석 요약이 들어 있다
     analysis: dict[str, JsonValue]
     ai: dict[str, JsonValue]
+    # processing_results 표 이름(createAt)을 그대로 내보낸다
     create_at: datetime
 
     @classmethod
@@ -92,6 +96,7 @@ class ComplaintItem(ApiModel):
     period: str
     received_at: datetime | None
     region: str | None
+    # 원문이 아니라 마스킹본만 내보낸다(개인정보 보호, PRD 4장 2단계)
     content_masked: str
     content_type: str
     source_category: str | None
@@ -103,6 +108,7 @@ class ComplaintItem(ApiModel):
     needs_review: bool
     review_reason: ReviewReason | None
     extraction_confidence: float | None
+    # 원문 위치({row} 또는 {page, block} 등). 화면에서 원본으로 되돌아가 확인할 때 쓴다
     source_locator: dict[str, int]
 
     @classmethod
@@ -169,6 +175,7 @@ class CategoryItem(ApiModel):
             group=doc.group,
             definition=doc.definition,
             keywords=doc.keywords,
+            # ObjectId 목록은 JSON으로 못 내보내므로 문자열로 바꾼다
             exemplar_ids=[str(i) for i in doc.exemplar_ids],
             status=doc.status,
             created_in_version=doc.created_in_version,
@@ -192,6 +199,7 @@ class CandidateItem(ApiModel):
     period: str
     size: int
     keywords: list[str]
+    # 대표 민원 ID 대신 마스킹 본문을 바로 담아, 승인 화면이 민원을 따로 조회하지 않게 한다
     exemplars: list[str]
     suggested_name: str
     suggested_definition: str | None
@@ -240,7 +248,9 @@ class CandidateDecisionRequest(ApiModel):
     승인 권한(PRD 12장)은 미정이라 결정자는 요청 값으로만 받는다.
     """
 
+    # pending으로 되돌리는 결정은 받지 않는다(결정은 한 번만 기록)
     decision: Literal["approved", "held", "merged"]
+    # 누가 결정했는지 이력에 남기기 위해 필수
     decided_by: str = Field(min_length=1, max_length=100)
     # 승인: 이름·상위 그룹(필수)·정의. 비우면 제안값을 쓴다
     name: str | None = Field(default=None, max_length=100)
@@ -256,6 +266,7 @@ class CandidateDecisionResult(ApiModel):
     candidate_id: str
     decision: CandidateDecision
     category_id: str | None
+    # 결정 뒤 현재 체계 버전(승인이면 1 올라간 값)
     taxonomy_version: int
     # 소속 민원 수, 승인 뒤 미배정 풀에서 새로 배정된 민원 수(소급 배정)
     member_count: int
@@ -304,5 +315,6 @@ class ReviewList(ApiModel):
 class ReviewDecisionRequest(ApiModel):
     """POST /complaints/reviews/{review_id} 요청. categoryId를 비우면 미배정으로 확정한다."""
 
+    # CAT-0012 형식 ID라 길이를 짧게 제한한다
     category_id: str | None = Field(default=None, max_length=20)
     reviewed_by: str = Field(min_length=1, max_length=100)

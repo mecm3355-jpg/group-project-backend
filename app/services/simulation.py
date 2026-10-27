@@ -112,12 +112,15 @@ def _cluster_quality(
         members: 군집별 민원 위치 목록
         gold: 위치별 정답 대분류
     """
+    # (군집 번호, 정답) 쌍으로 편다. 잡음·미승인 민원은 넣지 않아 "묶인 것의 품질"만 본다
     flat = [(cluster, gold[i]) for cluster, items in enumerate(members) for i in items]
     if not flat:
         return None, None, None
+    # 순도: 군집마다 가장 많은 정답 유형의 건수를 더해 전체로 나눈다(PRD 9장 군집 순도)
     majority = sum(Counter(gold[i] for i in items).most_common(1)[0][1] for items in members)
     predicted = [cluster for cluster, _ in flat]
     truth = [label for _, label in flat]
+    # ARI·NMI는 순도와 달리 한 유형이 여러 군집으로 쪼개진 것도 감점한다
     return (
         round(majority / len(flat), 4),
         round(float(adjusted_rand_score(truth, predicted)), 4),
@@ -147,6 +150,8 @@ def run_simulation(
         warmup_months: 첫 체계(v1)를 만들 때 모을 개월 수. 2 이상이면 처음 그만큼의 달을
             한 번에 군집화하고(그 마지막 달 이름으로 기록), 그다음 달부터 월별로 운영한다
     """
+    # 1) 접수월별로 민원을 나눈다. 준비 기간(warmup)의 달은 마지막 달 하나로 합쳐 첫 체계를
+    #    만든다. 접수월이 없는 민원은 운영 순서를 정할 수 없어 시뮬레이션에서 뺀다
     all_months = sorted({record.month for record in records if record.month})
     warmup = set(all_months[:warmup_months])
     first_period = all_months[: max(warmup_months, 1)][-1] if all_months else ""
@@ -155,11 +160,13 @@ def run_simulation(
         if record.month:
             period = first_period if record.month in warmup else record.month
             by_month.setdefault(period, []).append(index)
+    # 정답 유형마다 처음 등장한 달. 신규 유형이 제때 발견됐는지(newTypeFound) 볼 때 쓴다
     first_seen: dict[str, str] = {}
     for month in sorted(by_month):
         for index in by_month[month]:
             first_seen.setdefault(gold[index], month)
 
+    # 2) 운영 상태: 체계(승인된 카테고리), 카테고리별 정답, 남은 미배정 풀(민원 위치)
     result = SimulationResult()
     taxonomy: list[Category] = []
     category_gold: dict[str, str] = {}
@@ -171,7 +178,10 @@ def run_simulation(
     for month in sorted(by_month):
         incoming = by_month[month]
         stats = MonthStats(month=month, received=len(incoming))
+        # 지난달까지 체계에 들어온 정답 유형. 여기에 없는 유형이 자동 배정되면 "흡수"로 센다
         known = set(category_gold.values())
+        # 3) 이번 달 민원을 현재 체계에 배정한다. 미배정만 풀로 가고, 애매는 사람이 검토해
+        #    확정한다고 보고 풀에 넣지 않는다
         assignments = assign(
             [records[i] for i in incoming], vectors[incoming], taxonomy, config.assignment
         )
@@ -188,6 +198,8 @@ def run_simulation(
                 stats.unassigned += 1
                 pool.append(index)
 
+        # 4) 지난달에 남은 풀까지 합쳐 군집화한다. 작아서 후보가 못 됐던 민원도 다음 달에 다시
+        #    본다(PRD 5.1)
         stats.pool_size = len(pool)
         candidates = discover(
             [records[i] for i in pool],
@@ -198,11 +210,15 @@ def run_simulation(
             tokenizer=tokenizer,
         )
         stats.candidates = len(candidates)
+        # 5) 담당자가 후보를 모두 승인한다고 가정하고 체계에 넣는다. 실제 운영에서는 사람이
+        #    승인·보류·합치기를 정하지만, 여기서는 분석기 자체의 성능만 잰다
         month_clusters: list[list[int]] = []
         for candidate in candidates:
             members = [position[record_id] for record_id in candidate.member_ids]
+            # 평가용 정답: 소속 민원 중 가장 많은 정답 유형. 그 비율(gold_share)이 군집 순도다
             labels = Counter(gold[i] for i in members)
             label, share = labels.most_common(1)[0]
+            # 중심은 승인 시점 값으로 고정한다(PRD 5.3). 이후 배정된 민원으로 옮기지 않는다
             category = Category(
                 category_id=f"CAT-{len(taxonomy) + 1:04d}",
                 name=" ".join(candidate.keywords[:3]),
@@ -223,6 +239,7 @@ def run_simulation(
                     gold_share=round(share / len(members), 4),
                 )
             )
+        # 승인된 후보의 소속 민원은 그 카테고리로 확정되므로 풀에서 뺀다
         approved = {i for members in month_clusters for i in members}
         pool = [i for i in pool if i not in approved]
         approved_clusters.extend(month_clusters)
@@ -243,12 +260,16 @@ def run_simulation(
         stats.purity, stats.ari, stats.nmi = _cluster_quality(month_clusters, gold)
         result.months.append(stats)
 
+    # 6) 전체 지표. 첫 달은 체계가 없어 배정이 일어나지 않으므로 배정·검토 지표는 둘째 달부터
+    #    센다
     months = sorted(by_month)
     later = result.months[1:]
     received_later = sum(m.received for m in later)
     assigned = sum(m.assigned for m in later)
     purity, ari, nmi = _cluster_quality(approved_clusters, gold)
     found_types = set(category_gold.values())
+    # 첫 달 이후 처음 나온 유형이 그 달 또는 다음 달(2개월 연속 기준을 감안) 안에 카테고리로
+    # 승인됐는지 본다. 첫 달 유형은 신규가 아니므로 뺀다
     for label, month in first_seen.items():
         if month == months[0]:
             continue
@@ -259,13 +280,16 @@ def run_simulation(
         "purity": purity,
         "ari": ari,
         "nmi": nmi,
+        # 정답 유형 중 카테고리 1개 이상으로 나타난 비율(PRD 9장 발견 품질)
         "typeCoverage": _ratio(len(found_types), len(set(gold))),
         "assignmentAccuracy": _ratio(sum(m.assigned_correct for m in later), assigned),
+        # 체계에 없던 유형의 민원 중 기존 카테고리로 흡수되지 않은 비율(PRD 9장 신규 탐지율)
         "newDetectionRate": _ratio(
             sum(m.unseen_type_records - m.unseen_type_absorbed for m in later),
             sum(m.unseen_type_records for m in later),
         ),
         "newTypeFoundRate": _ratio(sum(result.new_type_found.values()), len(result.new_type_found)),
+        # 애매 + 미배정 = 사람이 봐야 하는 비율(PRD 9장 목표 25% 이하)
         "reviewRatio": _ratio(sum(m.ambiguous + m.unassigned for m in later), received_later),
         "autoAssignedRatio": _ratio(assigned, received_later),
         "retroAssignmentAccuracy": _ratio(
@@ -290,6 +314,7 @@ def meets_targets(metrics: dict[str, float | None]) -> dict[str, bool]:
     passed: dict[str, bool] = {}
     for name, target in TARGETS.items():
         value = metrics.get(name)
+        # 계산할 수 없었던 지표(분모 0)는 달성으로 치지 않는다
         if value is None:
             passed[name] = False
         elif name == "reviewRatio":

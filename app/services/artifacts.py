@@ -9,6 +9,7 @@ def job_params_key(job_id: ObjectId) -> str:
     파라미터:
         job_id: 작업 _id
     """
+    # 작업 임시 폴더(job_dir_key) 안에 두어, 작업이 끝나면 폴더째 지울 때 함께 사라지게 한다
     return f"jobs/{job_id}/params.json"
 
 
@@ -37,4 +38,6 @@ def cleaned_data_key(file_id: ObjectId, version: int) -> str:
         file_id: 파일 _id
         version: 정제 결과 버전
     """
+    # 결과 종류·버전별로 파일을 나눠, 예전 버전 산출물도 덮어쓰지 않고 내려받을 수 있게 한다
+    # (CLAUDE.md: 대용량 정제 결과는 파일로, DB에는 요약과 경로만)
     return f"{results_dir_key(file_id)}/cleaning/v{version}.csv"

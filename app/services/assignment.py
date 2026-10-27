@@ -12,6 +12,7 @@ from app.core.analysis_config import AssignmentConfig
 from app.schemas.complaint_analysis import Assignment, Category, ComplaintRecord
 from app.services.embedding import Vectors
 
+# 배정 결과 행마다 기록하는 분석기 이름·버전(PRD 6장). 배정 규칙을 바꾸면 번호를 올린다
 ANALYZER = "local-cosine@1"
 
 
@@ -29,6 +30,7 @@ def assign(
         taxonomy: 현재 체계의 카테고리(중심 벡터는 정규화된 값)
         config: 배정 기준값
     """
+    # 첫 달처럼 승인된 카테고리가 없으면 비교할 중심이 없으므로 전부 미배정 풀로 보낸다(PRD 4장)
     if not taxonomy:
         return [
             Assignment(
@@ -43,21 +45,27 @@ def assign(
             for record in records
         ]
 
+    # 민원 벡터와 중심 모두 길이 1이라 행렬곱 한 번이 (민원 × 카테고리) 코사인 유사도 표가 된다
     centroids = np.asarray([category.centroid for category in taxonomy], dtype=np.float32)
     similarities = vectors @ centroids.T
     results: list[Assignment] = []
     for record, row in zip(records, similarities, strict=True):
+        # 유사도 높은 순으로 1·2위를 찾는다. 카테고리가 하나뿐이면 2위는 없다
         order = np.argsort(-row)
         first = int(order[0])
         top1 = float(row[first])
         second = int(order[1]) if len(order) > 1 else None
         top2 = float(row[second]) if second is not None else None
+        # 기준값(초기 0.75)이 낮으면 다른 민원이 기존 카테고리로 흡수되고, 높으면 신규가 남발된다.
+        # 1·2위가 거의 같으면(차이 0.05 미만) 어느 쪽인지 기계가 정하지 않고 사람 검토로 넘긴다
+        # (PRD 5.3)
         if top1 < config.threshold:
             status = "unassigned"
         elif top2 is not None and top1 - top2 < config.ambiguity_margin:
             status = "ambiguous"
         else:
             status = "assigned"
+        # 미배정·애매여도 1·2위 카테고리와 유사도는 남긴다. 검토 화면과 기준값 조정의 근거가 된다
         results.append(
             Assignment(
                 record_id=record.record_id,

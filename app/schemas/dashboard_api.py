@@ -5,6 +5,7 @@ class FileSummary(ApiModel):
     """전체 통계 중 파일 집계. 분류·상태는 값이 없어도 0으로 채운다."""
 
     total: int
+    # 모든 원본 파일 크기 합(바이트). 산출물 파일은 포함하지 않는다
     total_size_bytes: int
     by_category: dict[str, int]
     by_status: dict[str, int]
@@ -15,6 +16,7 @@ class JobSummary(ApiModel):
 
     total: int
     by_status: dict[str, int]
+    # 작업 종류는 처리기가 늘어날 수 있어 고정 목록 없이 있는 값만 센다
     by_type: dict[str, int]
 
 
@@ -28,6 +30,7 @@ class QualitySummary(ApiModel):
 
     analyzed_file_count: int
     scored_file_count: int
+    # 점수 기준이 바뀐 뒤 재처리하지 않은 파일은 섞어 평균내면 왜곡되므로 따로 센다
     outdated_score_file_count: int
     average_score: float | None
     issues_by_type: dict[str, int]

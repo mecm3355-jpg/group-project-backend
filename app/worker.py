@@ -23,7 +23,9 @@ async def main() -> None:
     settings = get_settings()
     mongo = Mongo(settings.mongodb_uri, settings.mongodb_db_name)
     try:
+        # 워커가 API보다 먼저 떠도 작업 선점 조회에 쓰는 인덱스가 있도록 여기서도 확인한다
         await ensure_indexes(mongo.db)
+        # 멈춤 신호(Event)는 쓰지 않고 Ctrl+C(KeyboardInterrupt)로 끈다. 테스트는 Event로 멈춘다
         await JobRunner(mongo.db, settings, HANDLERS).run_forever(asyncio.Event())
     finally:
         await mongo.close()
@@ -31,5 +33,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Ctrl+C로 끌 때 긴 traceback 대신 조용히 끝나도록 한다
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())

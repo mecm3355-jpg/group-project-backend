@@ -23,6 +23,8 @@ class JobService:
         파라미터:
             job_id: 작업 ID 문자열(MongoDB _id)
         """
+        # 형식이 틀린 ID도 400이 아닌 404로 답한다. 어차피 그런 작업은 없고, 프론트는 한 가지
+        # 경우만 처리하면 된다
         try:
             oid = ObjectId(job_id)
         except (InvalidId, TypeError) as exc:

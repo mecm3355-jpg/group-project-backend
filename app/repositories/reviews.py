@@ -16,6 +16,7 @@ class ReviewRepository(BaseRepository[ReviewDocument]):
 
     COLLECTION = "reviews"
     INDEXES = [
+        # 검토 화면의 대기/완료 조회(status), 오래된 순 정렬(createdAt), 작업별 조회(jobId)용
         IndexModel([("status", ASCENDING)], name="status"),
         IndexModel([("createdAt", DESCENDING)], name="createdAt_desc"),
         IndexModel([("jobId", ASCENDING)], name="jobId"),
@@ -40,7 +41,9 @@ class ReviewRepository(BaseRepository[ReviewDocument]):
             limit: 최대 개수
         """
         query: dict[str, object] = {} if status is None else {"status": status}
+        # 페이지 계산용 전체 건수는 skip·limit 없이 같은 조건으로 센다
         total = await self.collection.count_documents(query)
+        # 오래 기다린 검토부터 처리하도록 오래된 순으로 준다
         return await self._find(query, [("createdAt", ASCENDING)], skip, limit), total
 
     async def complete(
@@ -55,6 +58,7 @@ class ReviewRepository(BaseRepository[ReviewDocument]):
             reviewed_at: 검토 일시
         """
         result = await self.collection.update_one(
+            # 끝난 검토를 다시 덮어쓰지 않도록 대기 중인 것만 바꾼다
             {"_id": review_id, "status": "pending"},
             {
                 "$set": {
@@ -84,5 +88,6 @@ class ReviewRepository(BaseRepository[ReviewDocument]):
         """
         if complaint_ids:
             await self.collection.delete_many(
+                # 끝난 검토는 사람이 내린 판단 이력이라 남기고, 대기 건만 지운다
                 {"complaintId": {"$in": list(complaint_ids)}, "status": "pending"}
             )

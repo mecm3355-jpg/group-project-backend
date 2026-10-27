@@ -17,9 +17,13 @@ VIOLATION_PLACES = (
     "안전지대",
     "인도",
 )
+# 비교는 공백을 지운 문자열로 하고, 보여줄 때만 띄어 쓴 이름으로 바꾼다
 PLACE_LABELS = {"교차로모퉁이": "교차로 모퉁이", "소방차전용구역": "소방차 전용구역"}
 # "(SPP-...)" 뒤에서 "불법 주정차" 앞까지
+# "주 정 차"처럼 띄어 쓴 변형도 받고, 게으른 매칭(.*?)으로 첫 "불법 주정차" 앞에서 멈춘다
 TITLE_PLACE = re.compile(r"\)\s*(.*?)\s*불법\s*주\s*정\s*차")
+# 문구는 있는데 목록에 없는 장소(기타)와 문구 자체가 없는 제목(미추출)을 나눠, 정형 문구가 아닌
+# 민원이 얼마나 섞였는지 따로 셀 수 있게 한다
 PLACE_OTHER = "기타"
 PLACE_UNKNOWN = "미추출"
 
@@ -43,7 +47,9 @@ def extract_violation_place(title: str) -> str:
     match = TITLE_PLACE.search(title)
     if not match:
         return PLACE_UNKNOWN
+    # "어린이 보호구역"·"어린이보호구역"처럼 띄어쓰기만 다른 표기를 같게 보려고 공백을 지운다
     compact = re.sub(r"\s+", "", match.group(1))
+    # 포함 여부로 본다(앞뒤에 수식어가 붙어도 잡히게). 여러 개가 들면 목록 앞쪽이 이긴다
     for place in VIOLATION_PLACES:
         if place in compact:
             return PLACE_LABELS.get(place, place)
@@ -59,13 +65,18 @@ def normalize_result(text: str) -> str:
     파라미터:
         text: 민원요지 값
     """
+    # 오타 변형은 띄어쓰기가 제각각이라(과태료 부과, 과태료부과) 공백을 지우고 본다
     compact = re.sub(r"\s+", "", text)
     if not compact:
         return RESULT_EMPTY
+    # "미부과"는 "부과"로도 끝나므로 먼저 본다. "미" 한 글자만큼 길이 한도를 1 늘린다
     if len(compact) <= RESULT_SHORT_MAX + 1 and compact.endswith("미부과"):
         return RESULT_NOT_IMPOSED
+    # 앞부분 오타(과태교·과태룔)는 다양해서 끝말 "부과"와 짧은 길이로만 판정한다.
+    # 긴 문장이 "부과"로 끝나면 개별 답변이므로 길이 한도로 거른다
     if len(compact) <= RESULT_SHORT_MAX and compact.endswith("부과"):
         return RESULT_IMPOSED
+    # 경고는 "경고장 발부", "경고 조치"처럼 뒤가 달라 시작 글자로 본다
     if compact.startswith("경고"):
         return RESULT_WARNING
     return RESULT_OTHER

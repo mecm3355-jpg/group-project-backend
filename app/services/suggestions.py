@@ -36,9 +36,11 @@ def _column_info(result: ResultDocument) -> dict[str, tuple[str, int]]:
         result: 분석 결과 문서
     """
     info: dict[str, tuple[str, int]] = {}
+    # analysis는 형식마다 모양이 다른 자유 객체라, 표 결과가 아니면(columns 없음) 빈 정보로 둔다
     columns = result.analysis.get("columns")
     if not isinstance(columns, list):
         return info
+    # 예전 버전 결과처럼 필드가 빠진 항목은 추천 근거로 못 쓰므로 조용히 건너뛴다
     for column in columns:
         if not isinstance(column, dict):
             continue
@@ -64,7 +66,9 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
     """
     columns = _column_info(result)
     suggestions: list[Suggestion] = []
+    # 문제 하나에 규칙 하나를 짝지어, 사용자가 어떤 문제를 고치는 규칙인지 바로 알게 한다
     for issue in result.quality.issues:
+        # location은 문제가 난 열 이름(행 전체 문제면 None, schema.md quality.issues 예시)
         column = issue.location
         if issue.type == "whitespace" and column:
             suggestions.append(
@@ -97,6 +101,7 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                 )
         elif issue.type == "missing_values" and column in columns:
             kind, unique = columns[column]
+            # 숫자는 평균 대신 중앙값: 이상치 몇 개에 채울 값이 끌려가지 않는다
             if kind == "number":
                 rule = FillMissingRule(type="fill_missing", column=column, strategy="median")
                 reason = f"숫자 열 {column}의 결측치 {issue.count}개를 중앙값으로 채웁니다."
@@ -104,6 +109,7 @@ def suggest_rules(result: ResultDocument) -> list[Suggestion]:
                 rule = FillMissingRule(type="fill_missing", column=column, strategy="mode")
                 reason = f"{column}의 결측치 {issue.count}개를 가장 많이 나온 값으로 채웁니다."
             else:
+                # 날짜 열·자유 서술 열은 그럴듯한 대표값이 없어 추천하지 않는다(사용자가 직접 판단)
                 continue
             suggestions.append(Suggestion(rule, reason, issue.count))
     return suggestions

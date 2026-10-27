@@ -19,9 +19,11 @@ async def ensure_indexes(db: AsyncDatabase[Document]) -> None:
     파라미터:
         db: 인덱스를 만들 MongoDB 데이터베이스
     """
+    # 기준 컬렉션(docs/db-schema/schema.md) 먼저: 민원 컬렉션이 없어도 파일 처리는 돌아야 한다
     await FileRepository(db).ensure_indexes()
     await JobRepository(db).ensure_indexes()
     await ResultRepository(db).ensure_indexes()
+    # 민원 전용 컬렉션(PRD 5.2·7.3·7.4 제안). 저장소마다 생성자 인자가 같아 반복문으로 처리한다
     for repository in (
         CategoryRepository(db),
         CandidateRepository(db),

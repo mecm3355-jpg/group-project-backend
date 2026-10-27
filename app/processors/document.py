@@ -25,7 +25,9 @@ from app.core.errors import AppError
 from app.processors.korean import fix_spacing
 from app.processors.ocr import OcrEngine
 
+# 글자 층을 직접 읽는 문서 형식(python-docx·pdfplumber가 읽을 수 있는 것만)
 DOCUMENT_EXTENSIONS = {"docx", "pdf"}
+# OCR로만 글자를 얻는 이미지 형식. jpg·jpeg는 같은 형식이지만 확장자 표기가 둘이라 둘 다 둔다
 IMAGE_EXTENSIONS = {"png", "jpg", "jpeg"}
 
 
@@ -45,7 +47,9 @@ class OcrOptions:
     """OCR 설정: 엔진, 렌더링 해상도, 검수 기준 신뢰도."""
 
     engine: OcrEngine
+    # 300dpi는 Tesseract가 권장하는 해상도. 낮추면 한글 획이 뭉개지고, 높이면 시간만 늘어난다
     dpi: int = 300
+    # 이 값 미만인 줄은 사람이 다시 볼 줄로 센다(PRD 7.6 검수 대상). 설정으로 바꿀 수 있다
     low_confidence: float = 0.6
     # OCR 줄의 띄어쓰기를 다시 잡는다(Tesseract 한국어는 글자 사이에 공백을 자주 넣는다)
     fix_spacing: bool = True
@@ -101,7 +105,9 @@ def _split_lines(text: str) -> Iterator[str]:
         text: 문단·페이지에서 뽑은 글자
     """
     for line in text.splitlines():
+        # 왼쪽 들여쓰기는 표·목록 구조일 수 있어 남기고, 끝 공백만 지운다
         line = line.rstrip()
+        # 공백만 있는 줄은 내용이 없으므로 줄 수·민원 분리에서 빠지도록 버린다
         if line.strip():
             yield line
 
@@ -117,6 +123,7 @@ def _ocr_entries(
         options: OCR 설정
         result: 통계를 쌓을 문서 객체
     """
+    # 엔진이 돌려준 줄 중 빈 줄은 버리고, 띄어쓰기 교정은 신뢰도와 무관하게 글자만 바꾼다
     entries = [
         DocLine(
             text=fix_spacing(line.text) if options.fix_spacing else line.text,
@@ -126,16 +133,19 @@ def _ocr_entries(
         for line in options.engine.recognize(image)
         if line.text.strip()
     ]
+    # 글자가 하나라도 나온 페이지만 "OCR한 페이지"로 센다(빈 페이지는 pages_without_text 몫)
     if entries:
         result.ocr_pages += 1
     low = 0
     for entry in entries:
+        # 신뢰도를 모르는 줄은 0으로 보아 검수 대상에 넣는다(놓치는 쪽보다 안전)
         confidence = entry.confidence or 0.0
         result.ocr_line_count += 1
         result.ocr_confidence_total += confidence
         if confidence < options.low_confidence:
             low += 1
     result.ocr_low_confidence_lines += low
+    # 검수할 페이지 목록은 페이지 단위로 한 번만 넣어 화면에서 바로 찾아가게 한다
     if low:
         result.ocr_low_confidence_pages.append(page)
     return entries
@@ -153,12 +163,14 @@ def _docx_entries(
         index: 본문 요소 순번(0부터, 원문 위치 paragraph)
         result: 표 개수를 쌓을 문서 객체
     """
+    # 문단은 줄바꿈(Shift+Enter)이 섞여 있을 수 있어 줄로 다시 나눈다
     if isinstance(block, Paragraph):
         for line in _split_lines(block.text):
             yield DocLine(text=line, paragraph=index)
         return
     result.table_count += 1
     for row_index, row in enumerate(block.rows):
+        # 칸 안의 줄바꿈·연속 공백은 한 칸으로 접어, 탭이 칸 경계로만 쓰이게 한다
         line = "\t".join(" ".join(cell.text.split()) for cell in row.cells)
         if line.strip():
             yield DocLine(text=line, paragraph=index, table_row=row_index)
@@ -178,14 +190,22 @@ def _open_docx(path: Path) -> Iterator[DocumentText]:
             document = docx.Document(stream)
         except Exception as exc:  # python-docx는 손상 유형마다 다른 예외를 던진다
             raise AppError("INVALID_FILE", "DOCX 파일을 읽을 수 없습니다.", 422) from exc
+        # entries는 아래에서 지연 반복자로 바꿔 끼운다. 먼저 빈 반복자로 객체를 만들어
+        # 반복 중에 표 개수 같은 통계를 이 객체에 쌓을 수 있게 한다
         result = DocumentText("docx", iter(()))
 
         def entries() -> Iterator[DocLine]:
-            """본문 요소를 차례로 줄로 바꾼다."""
+            """본문 요소를 차례로 줄로 바꾼다.
+
+            파라미터: 없음(바깥의 document·result를 쓴다)
+            """
+            # iter_inner_content는 문단과 표를 문서에 나온 순서대로 준다(paragraphs·tables를
+            # 따로 돌면 표가 본문 어디에 있었는지 잃는다)
             for index, block in enumerate(document.iter_inner_content()):
                 yield from _docx_entries(block, index, result)
 
         result.entries = entries()
+        # with 블록 안에서만 읽게 해, 큰 문서도 줄 단위로 흘려보내고 파일은 블록 끝에 닫는다
         yield result
 
 
@@ -205,36 +225,50 @@ def _open_pdf(path: Path, ocr: OcrOptions | None) -> Iterator[DocumentText]:
             raise AppError(
                 "INVALID_FILE", "PDF 파일을 읽을 수 없습니다(손상 또는 암호 설정).", 422
             ) from exc
+        # 여기부터 예외가 나도 pdf를 닫도록 try/finally로 감싼다(pdfplumber는 파일을 붙잡는다)
         try:
             result = DocumentText("pdf", iter(()), page_count=page_count)
+            # OCR 엔진 이름은 엔진이 있을 때만 남겨, 진단에서 "OCR 미설정"과 구분하게 한다
             if ocr is not None:
                 result.ocr_engine = ocr.engine.name
                 result.low_confidence = ocr.low_confidence
 
             def entries() -> Iterator[DocLine]:
-                """페이지를 하나씩 읽어 줄로 바꾼다. 읽은 페이지는 바로 닫아 메모리를 줄인다."""
+                """페이지를 하나씩 읽어 줄로 바꾼다. 읽은 페이지는 바로 닫아 메모리를 줄인다.
+
+                파라미터: 없음(바깥의 pdf·ocr·result를 쓴다)
+                """
                 for page in pdf.pages:
                     number = page.page_number
                     try:
+                        # 글자 층이 있으면 OCR보다 정확하고 빠르므로 먼저 읽는다
                         text = page.extract_text() or ""
                         scanned: list[DocLine] = []
+                        # 글자 층이 비었을 때만 렌더링해 OCR한다(스캔 페이지). 텍스트형 PDF에
+                        # 렌더링 비용을 쓰지 않으려는 것
                         if not text.strip() and ocr is not None:
                             image = page.to_image(resolution=ocr.dpi).original
                             scanned = _ocr_entries(image, number, ocr, result)
                     except AppError:
+                        # OCR 쪽에서 이미 의미 있는 오류로 바꾼 것은 그대로 올린다
                         raise
                     except Exception as exc:  # 페이지 내용이 깨진 경우
+                        # 몇 쪽이 깨졌는지 알려 사용자가 원본을 확인할 수 있게 한다
                         raise AppError(
                             "INVALID_FILE", f"PDF {number}쪽을 읽을 수 없습니다.", 422
                         ) from exc
                     finally:
+                        # pdfplumber는 페이지 객체에 글자·도형을 캐시하므로 바로 닫아야
+                        # 수백 쪽 PDF에서도 메모리가 쌓이지 않는다
                         page.close()
+                    # yield는 페이지를 닫은 뒤에 한다(소비자가 오래 붙잡아도 페이지는 풀림)
                     if text.strip():
                         for line in _split_lines(text):
                             yield DocLine(text=line, page=number)
                     elif scanned:
                         yield from scanned
                     else:
+                        # 글자 층도 OCR 결과도 없는 페이지: 품질 진단의 "OCR 필요" 근거가 된다
                         result.pages_without_text += 1
 
             result.entries = entries()
@@ -252,6 +286,8 @@ def load_image(path: Path) -> Image.Image:
     파라미터:
         path: 파일 경로
     """
+    # Image.open은 머리말만 읽는다. 화소 수 한도는 여기서 걸리므로 압축 폭탄은 픽셀을
+    # 풀기 전에 막힌다
     try:
         image = Image.open(path)
     except Image.DecompressionBombError as exc:
@@ -260,9 +296,12 @@ def load_image(path: Path) -> Image.Image:
         ) from exc
     except (UnidentifiedImageError, OSError) as exc:
         raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
+    # 픽셀을 지금 다 읽어 둔다. 머리말은 멀쩡하고 본문이 잘린 파일은 여기서야 드러나므로,
+    # 나중에 OCR·썸네일 도중 터지지 않고 422로 바로 알린다
     try:
         image.load()
     except (UnidentifiedImageError, OSError) as exc:
+        # 실패해도 파일 핸들은 닫아야 Windows에서 원본 삭제가 막히지 않는다
         image.close()
         raise AppError("INVALID_FILE", "이미지 파일을 읽을 수 없습니다.", 422) from exc
     return image
@@ -282,6 +321,7 @@ def _open_image(
         ocr: OCR 설정
         allow_missing_ocr: OCR 엔진이 없어도 메타데이터만으로 열지 여부
     """
+    # 파일 문제가 아니라 서버 설정 문제이므로 422가 아닌 503으로 알린다
     if ocr is None and not allow_missing_ocr:
         raise AppError(
             "OCR_NOT_AVAILABLE",
@@ -289,8 +329,10 @@ def _open_image(
             503,
         )
     image = load_image(path)
+    # 메타데이터는 OCR 여부와 상관없이 남긴다(OCR 없는 환경의 이미지 진단 근거)
     info = ImageInfo(image.format, image.width, image.height, image.mode)
     try:
+        # OCR 없이 연 경우: 글자 줄은 비우고, 썸네일·메타데이터용 원본만 넘긴다
         if ocr is None:
             yield DocumentText("image", iter(()), page_count=1, image=info, source_image=image)
             return
@@ -305,7 +347,11 @@ def _open_image(
         )
 
         def entries() -> Iterator[DocLine]:
-            """이미지 한 장을 OCR한다."""
+            """이미지 한 장을 OCR한다.
+
+            파라미터: 없음(바깥의 image·ocr·result를 쓴다)
+            """
+            # 팔레트(P)·투명(RGBA)·CMYK 이미지는 Tesseract가 잘못 읽으므로 RGB로 맞춘다
             found = _ocr_entries(image.convert("RGB"), 1, ocr, result)
             if not found:
                 result.pages_without_text += 1
@@ -333,6 +379,7 @@ def open_document(
         allow_missing_ocr: OCR 없이 이미지를 열 때 오류 대신 메타데이터만 채울지 여부
             (품질 진단·미리보기용. 민원 추출처럼 글자가 꼭 필요한 곳은 False)
     """
+    # 확장자는 업로드 때 실제 형식 검증(file_validation)을 마친 값이라 그대로 믿고 고른다
     if extension == "docx":
         opener = _open_docx(path)
     elif extension == "pdf":

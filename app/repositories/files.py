@@ -15,8 +15,11 @@ class FileRepository(BaseRepository[FileDocument]):
 
     COLLECTION = "files"
     INDEXES = [
+        # 목록 API의 기본 정렬(최신 업로드 순)용
         IndexModel([("createdAt", DESCENDING)], name="createdAt_desc"),
+        # 상태 필터 + 최신순 정렬을 한 인덱스로 처리하도록 동등 조건(status)을 앞에 둔다
         IndexModel([("status", ASCENDING), ("createdAt", DESCENDING)], name="status_createdAt"),
+        # CLAUDE.md 인덱스 규칙(jobId 등). 작업 ID로 대상 파일을 거꾸로 찾을 때를 대비한다
         IndexModel([("lastJobId", ASCENDING)], name="lastJobId"),
     ]
 
@@ -33,10 +36,12 @@ class FileRepository(BaseRepository[FileDocument]):
 
         파라미터: 없음
         """
+        # 문서를 모두 읽지 않고 DB에서 합계만 계산한다(대시보드 전체 용량)
         pipeline: list[Document] = [{"$group": {"_id": None, "total": {"$sum": "$sizeBytes"}}}]
         cursor = await self.collection.aggregate(pipeline)
         rows = [row async for row in cursor]
         total = rows[0]["total"] if rows else 0
+        # 파일이 없으면 결과 행이 없으므로 0. 합계가 int가 아니면(이상 데이터) 0으로 둔다
         return total if isinstance(total, int) else 0
 
     @staticmethod
@@ -51,6 +56,8 @@ class FileRepository(BaseRepository[FileDocument]):
         if status is not None:
             query["status"] = status
         if name:
+            # 검색어를 정규식으로 해석하지 않도록 escape한다
+            # ('a.csv'의 '.'이 아무 글자와 맞는 것과, 악의적 패턴으로 DB가 느려지는 것을 막음)
             query["originalName"] = {"$regex": re.escape(name), "$options": "i"}
         return query
 
@@ -92,8 +99,11 @@ class FileRepository(BaseRepository[FileDocument]):
             status: 새 상태
             last_job_id: 함께 기록할 마지막 작업 ID. None이면 기존 값 유지
         """
+        # schema.md: updatedAt은 최종 수정 일시이므로 상태가 바뀔 때마다 함께 갱신한다
         changes: dict[str, object] = {"status": status, "updatedAt": utc_now()}
+        # 작업 없이 상태만 바꾸는 경우(예: 실패 처리) 기존 lastJobId를 지우지 않도록 넘긴 때만 쓴다
         if last_job_id is not None:
             changes["lastJobId"] = last_job_id
         result = await self.collection.update_one({"_id": file_id}, {"$set": changes})
+        # 값이 같아 modified가 0이어도 문서는 있으므로 matched로 판단한다
         return result.matched_count == 1

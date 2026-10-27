@@ -20,4 +20,5 @@ async def get_job(
         service: 작업 서비스
         job_id: 작업 ID
     """
+    # 없는 ID·잘못된 형식은 서비스가 AppError로 던지고, 여기서는 표 필드를 응답 형식으로 옮긴다
     return ok(JobDetail.from_document(await service.get(job_id)))

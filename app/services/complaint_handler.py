@@ -55,6 +55,8 @@ from app.services.ocr_setup import ocr_options
 
 # 새 후보와 이전 후보의 소속 민원이 이 비율(Jaccard) 이상 겹치면 이름 초안을 이어 쓴다
 REUSE_OVERLAP = 0.5
+# 배정기(assignment.py)의 상태 → complaints.assignStatus 값. 자동 배정은 사람 확정과 구분해
+# "auto"로 둔다(PRD 8.1 배정 상태: 자동 배정 / 애매 / 미배정 / 사람 확정)
 STATUS_MAP: dict[str, AssignStatus] = {
     "assigned": "auto",
     "ambiguous": "ambiguous",
@@ -88,10 +90,13 @@ def _review_reason(
         low_confidence: OCR 검수 기준
         uncertain: 속성 추출이 실패해 규칙으로 대신했는지
     """
+    # 검토 목록에는 사유가 하나만 붙으므로, 늦게 보면 안 되는 것부터 고른다.
+    # 긴급(인명·사고 위험)은 배정이 맞아도 사람이 먼저 확인해야 한다(PRD 8.2 긴급·취약계층)
     if attributes.urgency == "긴급":
         return "urgent"
     if status == "ambiguous":
         return "ambiguous"
+    # OCR 신뢰도가 낮으면 본문 자체가 틀렸을 수 있어 배정·속성 모두 믿기 어렵다
     if confidence is not None and confidence < low_confidence:
         return "ocrUncertain"
     if uncertain:
@@ -113,9 +118,11 @@ def _reuse_suggestion(
         previous: 이전 결정 전 후보
         previous_members: 이전 후보 _id → 민원 _id 문자열
     """
+    # 기준값 이상 겹치는 이전 후보 중 가장 많이 겹치는 것 하나를 고른다
     best: CandidateDocument | None = None
     best_overlap = REUSE_OVERLAP
     for candidate_id, old in previous_members.items():
+        # Jaccard = 교집합 / 합집합. 후보 크기가 달라도 0~1로 비교할 수 있다
         overlap = len(members & old) / len(members | old)
         if overlap >= best_overlap:
             best, best_overlap = previous[candidate_id], overlap
@@ -131,6 +138,7 @@ def resolve_method(request: ComplaintAnalysisRequest, settings: Settings) -> str
         request: 분석 요청
         settings: 앱 설정
     """
+    # LLM 연결 정보가 없어도 모든 기능이 돌도록 auto는 규칙 방식으로 물러선다
     if request.attribute_method == "auto":
         return "llm" if llm_configured(settings, "fast") else "rule"
     return request.attribute_method
@@ -156,15 +164,18 @@ async def _attributes(
         embedder: 임베더(원형 문장용)
         config: 원형 분류 기준
     """
+    # 규칙 속성은 LLM 방식에서도 먼저 만든다. LLM이 실패·누락한 민원의 대체값이 된다
     rules = refine_with_prototypes(
         [extract_by_rules(r) for r in records], vectors, embedder, config
     )
     by_rule = {a.record_id: a for a in rules}
     if method == "rule":
         return [by_rule[r.record_id] for r in records], set(), None
+    # 속성 추출은 fast 배포를 쓴다(이름 초안은 deep). 호출 내역(usage)을 남기려고 client도 돌려준다
     client = create_llm_client(ctx.settings, "fast")
     extraction = await extract_by_llm(records, client)
     found = {a.record_id: a for a in extraction.attributes}
+    # LLM 값이 없는 민원은 규칙 값으로 채우되 불확실로 표시해 검토 사유(attributeUncertain)가 된다
     uncertain = {r.record_id for r in records if r.record_id not in found}
     return [found.get(r.record_id, by_rule[r.record_id]) for r in records], uncertain, client
 
@@ -181,9 +192,11 @@ async def _pool_vectors(
     """
     if not pool:
         return np.zeros((0, 0), dtype=np.float32)
+    # 파일 읽기는 이벤트 루프를 막지 않게 스레드에서 한다
     stored = await asyncio.to_thread(
         load_vectors, ctx.storage, [(c.id, c.file_id, c.job_id) for c in pool]
     )
+    # 산출물이 지워진 민원은 마스킹본으로 다시 계산한다(임베더 캐시가 있으면 금방 끝난다)
     missing = [c for c in pool if c.id not in stored]
     if missing:
         computed = await asyncio.to_thread(embedder.embed, [c.content_masked for c in missing])
@@ -198,10 +211,12 @@ async def analyze_complaints(ctx: JobContext) -> None:
     파라미터:
         ctx: 작업 실행 정보
     """
+    # ── validating: 원본과 작업 요청을 확인한다. 진행률(%)은 단계별 대략적인 소요 비중이다
     await ctx.report("validating", 5)
     path = ctx.storage.path(ctx.file.storage.key)
     if not path.is_file():
         raise AppError("SOURCE_MISSING", "원본 파일이 저장소에 없습니다.", 422)
+    # 요청(매핑·분리 규칙 등)은 processing_jobs에 필드를 늘리지 않으려고 산출물 파일로 둔다
     raw = await asyncio.to_thread(ctx.storage.read_text, job_params_key(ctx.job.id))
     request = ComplaintAnalysisRequest.model_validate_json(raw)
     config = load_analysis_config()
@@ -212,8 +227,10 @@ async def analyze_complaints(ctx: JobContext) -> None:
     reviews_repo = ReviewRepository(db)
     issues_repo = IssueRepository(db)
     now = datetime.now(UTC)
+    # 접수일이 없는 민원(문서형 등)은 작업을 돌린 달로 집계한다
     job_month = f"{now.year:04d}-{now.month:02d}"
 
+    # ── parsing: 형식별 추출·민원 분리. OCR이 있어 오래 걸리므로 스레드에서 돌린다
     await ctx.report("parsing", 10)
     extraction = await asyncio.to_thread(
         extract_complaints,
@@ -229,17 +246,21 @@ async def analyze_complaints(ctx: JobContext) -> None:
             "NO_COMPLAINTS", "파일에서 민원을 찾지 못했습니다(매핑·분리 규칙 확인).", 422
         )
 
+    # ── masking: 이후 모든 단계(임베딩·LLM·DB 저장)는 마스킹본만 본다(PRD 10장).
+    #    종류별 치환 건수는 결과 요약에 남겨 마스킹 점검에 쓴다
     await ctx.report("masking", 25)
     masked = [mask_text(r.text) for r in raws]
     pii: Counter[str] = Counter()
     for result in masked:
         pii.update(result.counts)
+    # complaints._id를 미리 만들어, 저장 전 단계(배정·후보·이슈·벡터 파일)에서 같은 id로 잇는다
     docs_ids = [ObjectId() for _ in raws]
     records = [
         ComplaintRecord(record_id=str(oid), text=m.text, month=_period(r.received_at, job_month))
         for oid, m, r in zip(docs_ids, masked, raws, strict=True)
     ]
 
+    # ── embedding: 로컬 모델로만 계산한다(원문이 밖으로 나가지 않음, PRD 6장)
     await ctx.report("embedding", 35)
     embedder = get_embedder(ctx.settings)
     vectors = await asyncio.to_thread(embedder.embed, [r.text for r in records])
@@ -250,6 +271,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
         records, method, ctx, vectors, embedder, config.attributes
     )
 
+    # ── assigning: 가장 최신 체계 버전의 카테고리 중심과 비교한다. 체계가 없으면(첫 달) 전부
+    #    미배정이 된다
     await ctx.report("assigning", 55)
     version = await categories_repo.latest_version()
     category_docs = await categories_repo.list_version(version) if version else []
@@ -265,6 +288,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
     groups = {c.category_id: c.group for c in category_docs}
     assignments = assign(records, vectors, taxonomy, config.assignment)
 
+    # 민원마다 임베딩 모델과 속성 분석기를 기록한다(PRD 6장, 7.4 analyzer)
     analyzer = f"{embedder.model_name} / {attributes[0].analyzer if attributes else '-'}"
     docs: list[ComplaintDocument] = []
     for oid, raw_item, record, attr, assignment in zip(
@@ -278,7 +302,10 @@ async def analyze_complaints(ctx: JobContext) -> None:
             ctx.settings.ocr_low_confidence,
             record.record_id in uncertain,
         )
+        # 카테고리는 자동 배정일 때만 넣는다. 애매·미배정의 1위 후보는 similarity·검토 제안으로만
+        # 남겨, 확정되지 않은 값이 통계에 섞이지 않게 한다
         assigned = status == "auto"
+        # GeoJSON Point는 [경도, 위도] 순서다
         location = (
             GeoPoint(coordinates=[raw_item.longitude, raw_item.latitude])
             if raw_item.latitude is not None and raw_item.longitude is not None
@@ -293,6 +320,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
                 extraction_confidence=raw_item.confidence,
                 received_at=raw_item.received_at,
                 period=record.month or job_month,
+                # 원본 열·고정값의 지역이 없으면 본문에서 뽑은 행정동을 쓴다
                 region=raw_item.region or attr.place.dong,
                 location=location,
                 content_masked=record.text,
@@ -319,6 +347,9 @@ async def analyze_complaints(ctx: JobContext) -> None:
         )
     vector_of = {doc.id: vectors[i] for i, doc in enumerate(docs)}
 
+    # ── discovering: 미배정 풀 전체를 다시 군집화해 신규 카테고리 후보를 만든다(PRD 4장 5단계).
+    #    후보는 담당자가 승인해야 카테고리가 된다. 군집은 통계적 묶음일 뿐 업무상 의미가 맞는지
+    #    기계가 보장하지 못하고, 승인 뒤에는 체계 버전과 과거 통계가 바뀌기 때문이다(PRD 5.1)
     await ctx.report("discovering", 65)
     # 결정 전 후보는 새 후보로 바뀐다. 소속이 거의 같은 새 후보는 이전 이름 초안을 이어 쓴다
     previous = {c.id: c for c in await candidates_repo.list_by("pending")}
@@ -327,12 +358,16 @@ async def analyze_complaints(ctx: JobContext) -> None:
     for complaint in pool_before:
         if complaint.candidate_id in previous:
             previous_members.setdefault(complaint.candidate_id, set()).add(str(complaint.id))
+    # 결정 전 후보와 민원의 연결을 지운다. 결정된(승인·보류 등) 후보는 이력이라 남긴다
     stale_candidates = await candidates_repo.delete_pending()
     await complaints_repo.clear_candidates(stale_candidates)
+    # 같은 파일을 다시 분석하는 중이면 그 파일의 이전 민원은 곧 retire되므로 풀에서 뺀다
     old_pool = [c for c in pool_before if c.file_id != ctx.file.id]
     old_vectors = await _pool_vectors(old_pool, ctx, embedder)
+    # 애매 건은 검토 대기로 가고 풀에 넣지 않는다. 미배정만 새 카테고리 발견 대상이다
     new_pool = [d for d in docs if d.assign_status == "unassigned"]
     pool = [*old_pool, *new_pool]
+    # 빈 (0, 0) 행렬은 차원이 맞지 않아 vstack에서 빼고, pool과 같은 순서로 벡터를 쌓는다
     parts = [m for m in (old_vectors, *(vector_of[d.id][None, :] for d in new_pool)) if len(m)]
     pool_vectors = np.vstack(parts).astype(np.float32) if parts else old_vectors
     found = discover(
@@ -342,6 +377,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
         embedding_model=embedder.model_name,
         id_prefix=f"CAND-{job_month}",
     )
+    # 이름 초안은 deep 배포로 후보마다 한 번 부른다. 규칙 방식 작업이거나 deep 연결 정보가
+    # 없으면 LLM 없이 핵심어 이름을 쓴다(외부 전송 없음)
     deep_client = (
         create_llm_client(ctx.settings, "deep")
         if method == "llm" and llm_configured(ctx.settings, "deep")
@@ -357,6 +394,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
             suggestion = await suggest_name(
                 candidate.keywords, [text_of[i] for i in candidate.exemplar_ids], deep_client
             )
+        # 후보의 처리 월은 소속 민원 중 가장 최근 달(지난달 풀에서 넘어온 민원이 섞여도 이번 달)
         candidate_doc = CandidateDocument(
             job_id=ctx.job.id,
             period=max(period_of[i] for i in candidate.member_ids),
@@ -373,6 +411,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
     for doc in docs:
         doc.candidate_id = member_of.get(doc.id)
 
+    # ── issue_grouping: 자동 배정된 민원만 이슈로 묶는다("같은 카테고리" 조건이 필요하므로).
+    #    기존 이슈는 벡터를 따로 저장하지 않아 대표 문장을 다시 임베딩한다(캐시가 있어 가볍다)
     await ctx.report("issue_grouping", 80)
     open_issues = await issues_repo.open_issues()
     issue_vectors = (
@@ -386,6 +426,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
             category_id=d.category_id,
             vector=vector_of[d.id],
             text=d.content_masked,
+            # 장소 표현은 "행정동 + 지물"로 만든다. 지물이 없으면 동 이름만으로는 범위가 너무
+            # 넓어 같은 장소로 치지 않는다
             place=" ".join(p for p in (d.region, d.attributes.place) if p)
             if d.attributes.place
             else None,
@@ -401,6 +443,8 @@ async def analyze_complaints(ctx: JobContext) -> None:
     for doc in docs:
         doc.issue_id = grouped.assignments.get(doc.id)
 
+    # ── statistics: 이번 작업의 요약(processing_results.analysis.complaint). 배정 상태 비율은
+    #    체계 건강도(미배정·애매 비율 추이, PRD 8.2)를 보는 근거가 된다
     await ctx.report("statistics", 90)
     total = len(docs)
     statuses = Counter(d.assign_status for d in docs)
@@ -422,6 +466,7 @@ async def analyze_complaints(ctx: JobContext) -> None:
         "issuesUpdated": len(grouped.updated),
         "maskedPii": dict(pii),
     }
+    # 추출 단계의 품질 문제에 검토 대기 건수를 더해 quality.issues 하나로 보여 준다
     issues: list[QualityIssue] = list(extraction.issues)
     if reasons:
         issues.append(
@@ -434,7 +479,10 @@ async def analyze_complaints(ctx: JobContext) -> None:
             )
         )
 
+    # ── saving: 앞 단계는 메모리에서만 계산했다. 이전 민원 교체를 여기서 한꺼번에 해야 중간에
+    #    실패해도 이전 분석 결과가 그대로 남는다(재처리는 같은 파일로 새 작업)
     await ctx.report("saving", 95)
+    # 같은 파일의 이전 민원은 지우지 않고 deleted로 돌려 이력을 남기고, 걸려 있던 검토는 취소한다
     old_ids = [c.id for c in (await complaints_repo.list_filtered(file_id=ctx.file.id, limit=0))[0]]
     await complaints_repo.retire_file(ctx.file.id)
     await reviews_repo.cancel_pending_for(old_ids)
@@ -452,15 +500,18 @@ async def analyze_complaints(ctx: JobContext) -> None:
         ]
     )
     await candidates_repo.insert_many(candidates)
+    # 다른 파일에서 남아 있던 풀 민원도 새 후보에 들었으면 후보 연결을 고친다
     await complaints_repo.update_fields(
         [(c.id, {"candidateId": member_of[c.id]}) for c in old_pool if c.id in member_of]
     )
     await issues_repo.insert_many(grouped.created)
     for issue in grouped.updated:
         await issues_repo.replace(issue)
+    # 민원 벡터는 MongoDB 문서가 아니라 산출물 파일로 두고 경로만 결과에 남긴다(PRD 7.4)
     vectors_storage_key = await asyncio.to_thread(
         save_vectors, ctx.storage, ctx.file.id, ctx.job.id, docs_ids, vectors
     )
+    # LLM을 실제로 쓴 경우에만 호출 건수·토큰·실패를 processing_results.ai에 남긴다(PRD 6.1)
     ai: dict[str, JsonValue] = {}
     if fast_client is not None:
         ai["attributes"] = fast_client.usage.to_record()

@@ -19,6 +19,8 @@ from app.core.errors import AppError
 
 Vectors = NDArray[np.float32]
 
+# 한국어를 지원하는 다국어 문장 임베딩(PRD 6장 "bge-m3 등"). 바꾸면 카테고리 중심을 모두 다시
+# 계산해야 하므로 교체는 분기 정리 때만 한다(PRD 6장 공통 인터페이스)
 DEFAULT_MODEL = "BAAI/bge-m3"
 
 
@@ -44,6 +46,7 @@ def normalize(vectors: NDArray[np.floating]) -> Vectors:
     """
     matrix = np.asarray(vectors, dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # 0으로 나누면 NaN이 퍼지므로 영벡터는 1로 나눠(=그대로) 유사도 0이 되게 둔다
     norms[norms == 0] = 1.0
     return np.asarray(matrix / norms, dtype=np.float32)
 
@@ -58,6 +61,8 @@ class SentenceTransformerEmbedder:
             model_name: Hugging Face 모델 이름
             batch_size: 한 번에 계산할 본문 수
         """
+        # torch까지 딸린 무거운 선택 패키지(analysis extra)라 모듈 맨 위가 아니라 여기서 불러온다.
+        # 그래야 임베딩을 쓰지 않는 API·테스트는 패키지 없이도 뜬다
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
@@ -76,8 +81,11 @@ class SentenceTransformerEmbedder:
         파라미터:
             texts: 마스킹된 본문 목록
         """
+        # 빈 목록을 모델에 넘기면 차원을 알 수 없으므로 빈 행렬을 바로 돌려준다
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
+        # 워커 로그를 어지럽히지 않게 진행 막대는 끈다. 정규화는 아래에서 직접 해 모델 설정과
+        # 상관없이 내적 = 코사인 유사도를 보장한다
         encoded = self._model.encode(
             texts, batch_size=self._batch_size, convert_to_numpy=True, show_progress_bar=False
         )
@@ -104,7 +112,10 @@ class CachedEmbedder:
         파라미터:
             text: 본문
         """
+        # 모델 이름을 해시에 섞어 모델을 바꾸면 다른 파일을 보게 한다(차원·값이 달라지므로).
+        # 본문 대신 해시를 파일명으로 써 마스킹본이라도 파일명에 내용이 드러나지 않는다
         digest = hashlib.sha256(f"{self.model_name}\n{text}".encode()).hexdigest()
+        # 한 폴더에 파일이 너무 많이 쌓이지 않도록 해시 앞 두 글자로 하위 폴더를 나눈다
         return self._dir / digest[:2] / f"{digest}.npy"
 
     def embed(self, texts: list[str]) -> Vectors:
@@ -113,6 +124,7 @@ class CachedEmbedder:
         파라미터:
             texts: 마스킹된 본문 목록
         """
+        # 1) 캐시에 있는 벡터는 읽고, 없는 본문의 위치만 모은다
         found: dict[int, Vectors] = {}
         missing: list[int] = []
         for index, text in enumerate(texts):
@@ -121,6 +133,8 @@ class CachedEmbedder:
                 found[index] = np.asarray(np.load(path), dtype=np.float32)
             else:
                 missing.append(index)
+        # 2) 빠진 것만 한 번에 묶어 계산해 저장한다. 재분석·시뮬레이션에서 같은 본문이 반복되므로
+        #    bge-m3를 다시 돌리는 시간을 아낀다
         if missing:
             computed = self._inner.embed([texts[i] for i in missing])
             for row, index in enumerate(missing):
@@ -128,11 +142,13 @@ class CachedEmbedder:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 np.save(path, computed[row])
                 found[index] = computed[row]
+        # 3) np.stack은 빈 목록을 받지 못하므로 따로 처리하고, 나머지는 입력 순서대로 쌓는다
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
         return np.stack([found[i] for i in range(len(texts))]).astype(np.float32)
 
 
+# 테스트용 대체 임베더. 설정돼 있으면 get_embedder가 실제 모델 대신 이것을 돌려준다
 _override: Embedder | None = None
 
 
@@ -165,5 +181,7 @@ def get_embedder(settings: Settings) -> Embedder:
     """
     if _override is not None:
         return _override
+    # 캐시 폴더를 따로 정하지 않으면 저장소 아래에 둔다. resolve()로 절대 경로를 만들어
+    # 같은 폴더를 다르게 적어도 lru_cache 키가 같아지게 한다
     cache_dir = settings.embedding_cache_dir or settings.storage_root / "embedding-cache"
     return _cached_embedder(settings.embedding_model, cache_dir.resolve())

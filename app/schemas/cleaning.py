@@ -14,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+# mean·median: 숫자 열, mode: 최빈값(문자 열도 가능), constant: 지정한 value로 채움
 FillStrategy = Literal["mean", "median", "mode", "constant"]
 
 
@@ -28,6 +29,7 @@ class RuleModel(BaseModel):
             handler: pydantic 기본 직렬화 함수
         """
         data: dict[str, object] = handler(self)
+        # 저장·응답에 "columns": null 같은 키가 섞이지 않게 해 명세서 예시와 같은 모양을 유지한다
         return {k: v for k, v in data.items() if v is not None}
 
 
@@ -42,6 +44,7 @@ class RemoveDuplicatesRule(RuleModel):
     """중복 행을 지우고 처음 나온 행만 남긴다. columns가 없으면 모든 열이 같을 때 중복으로 본다."""
 
     type: Literal["remove_duplicates"]
+    # 빈 목록은 '어떤 열로도 비교하지 않음'이라 뜻이 모호하므로 막고, 전체 열은 생략으로 표현한다
     columns: list[str] | None = Field(default=None, min_length=1)
 
 
@@ -51,6 +54,7 @@ class FillMissingRule(RuleModel):
     type: Literal["fill_missing"]
     column: str
     strategy: FillStrategy
+    # constant일 때만 쓰는 채울 값. 다른 전략에서는 무시된다
     value: str | int | float | None = None
 
     @model_validator(mode="after")
@@ -59,12 +63,14 @@ class FillMissingRule(RuleModel):
 
         파라미터: 없음(검증할 규칙 자신)
         """
+        # 필드 단위로는 조건을 표현할 수 없어 모델 검증에서 확인한다. ValueError는 422로 바뀐다
         if self.strategy == "constant" and self.value is None:
             raise ValueError("strategy가 constant이면 value가 필요합니다.")
         return self
 
 
 CleanRule = Annotated[
+    # type 값으로 규칙 모델을 바로 고르게 해, 잘못된 규칙의 오류 메시지가 그 규칙 기준으로 나온다
     TrimWhitespaceRule | RemoveDuplicatesRule | FillMissingRule, Field(discriminator="type")
 ]
 
@@ -72,4 +78,5 @@ CleanRule = Annotated[
 class CleanRequest(BaseModel):
     """POST /api/v1/files/{file_id}/clean 요청 본문 — 승인한 정제 규칙 목록(적용 순서대로)."""
 
+    # 빈 요청은 정제 버전만 늘리므로 막고, 한 번에 50개로 제한해 지나친 요청을 막는다
     rules: list[CleanRule] = Field(min_length=1, max_length=50)

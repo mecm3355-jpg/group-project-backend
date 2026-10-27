@@ -16,8 +16,12 @@ class JobRepository(BaseRepository[JobDocument]):
 
     COLLECTION = "processing_jobs"
     INDEXES = [
+        # 필드명은 schema.md 표 기준(field·createAt). 예시의 fileId·createdAt과 차이는 PRD 7.7
+        # 파일별 작업 이력(최신순)과 진행 중 작업 확인(has_active)용
         IndexModel([("field", ASCENDING), ("createAt", DESCENDING)], name="field_createAt"),
+        # 워커의 작업 선점(queued 중 가장 오래된 것)이 정렬 없이 인덱스 순서로 바로 찾도록 오름차순
         IndexModel([("status", ASCENDING), ("createAt", ASCENDING)], name="status_createAt"),
+        # 작업 종류(analyze·clean·report 등)별 조회·집계용
         IndexModel([("type", ASCENDING)], name="type"),
         IndexModel([("createAt", DESCENDING)], name="createAt_desc"),
     ]
@@ -47,9 +51,12 @@ class JobRepository(BaseRepository[JobDocument]):
             types: 이 워커가 처리할 수 있는 작업 종류(type) 목록
         """
         raw = await self.collection.find_one_and_update(
+            # 이 워커에 처리기가 없는 종류는 다른 워커가 가져가도록 남겨 둔다
             {"status": "queued", "type": {"$in": list(types)}},
             {"$set": {"status": "processing", "stage": "started", "startedAt": utc_now()}},
+            # 먼저 들어온 작업부터 처리(FIFO)해 오래 기다리는 작업이 없게 한다
             sort=[("createAt", ASCENDING)],
+            # 바뀐 뒤 문서를 받아 status·startedAt이 갱신된 상태로 처리기에 넘긴다
             return_document=ReturnDocument.AFTER,
         )
         return None if raw is None else JobDocument.model_validate(raw)
@@ -60,6 +67,7 @@ class JobRepository(BaseRepository[JobDocument]):
         파라미터:
             file_id: 대상 파일 _id
         """
+        # 존재 여부만 보면 되므로 _id만 가져온다. 같은 파일에 작업이 겹치는 것을 막는 데 쓴다
         found = await self.collection.find_one(
             {"field": file_id, "status": {"$in": ["queued", "processing"]}}, {"_id": 1}
         )
@@ -72,6 +80,7 @@ class JobRepository(BaseRepository[JobDocument]):
             started_before: 이 시각 이전에 시작한 작업만
         """
         return await self._find(
+            # 워커가 죽으면 processing에 머문 채 남으므로, 시작한 지 오래된 것을 시간 초과로 찾는다
             {"status": "processing", "startedAt": {"$lt": started_before}},
             [("startedAt", ASCENDING)],
         )
@@ -105,6 +114,7 @@ class JobRepository(BaseRepository[JobDocument]):
             stage: 현재 단계 이름
             progress: 진행률(0~100)
         """
+        # schema.md: progress는 0~100. 잘못된 값이 DB에 들어가기 전에 호출한 코드의 버그로 드러낸다
         if not 0 <= progress <= 100:
             raise ValueError("progress는 0~100 사이여야 합니다.")
         return await self._set(job_id, {"stage": stage, "progress": progress})
@@ -118,6 +128,7 @@ class JobRepository(BaseRepository[JobDocument]):
             job_id: 작업 _id
         """
         result = await self.collection.update_one(
+            # 조건에 status를 넣어, 처리 중 시간 초과로 실패 처리된 작업을 완료로 덮어쓰지 않는다
             {"_id": job_id, "status": "processing"},
             {
                 "$set": {
@@ -140,6 +151,8 @@ class JobRepository(BaseRepository[JobDocument]):
             error: 오류 코드와 메시지
         """
         result = await self.collection.update_one(
+            # 끝난 작업의 결과·오류를 덮어쓰지 않도록 아직 끝나지 않은 작업만 실패로 바꾼다.
+            # stage는 건드리지 않아 어느 단계에서 실패했는지 남는다(processing_jobs 실패 원인 추적)
             {"_id": job_id, "status": {"$in": ["queued", "processing"]}},
             {"$set": {"status": "failed", "error": error.to_document(), "completedAt": utc_now()}},
         )
@@ -151,5 +164,6 @@ class JobRepository(BaseRepository[JobDocument]):
         파라미터:
             file_id: 대상 파일 _id
         """
+        # 파일 삭제 시 함께 지운다(명세서: 파일 및 관련 결과 삭제)
         result = await self.collection.delete_many({"field": file_id})
         return result.deleted_count

@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.errors import AppError
 from app.services.llm import LlmClient
 
+# 프롬프트(SYSTEM)를 고치면 올린다. LLM 응답 캐시가 이 버전 + 입력 해시로 묶이므로(PRD 6.1),
+# 버전을 그대로 두면 바뀐 프롬프트에도 이전 응답이 재사용된다
 PROMPT_VERSION = "category-name@1"
 # PRD 5.4 초기 상위 그룹(참고용). 어느 것에도 맞지 않으면 새 그룹을 제안한다
 GROUPS = (
@@ -58,6 +60,7 @@ def keyword_name(keywords: list[str]) -> str:
     파라미터:
         keywords: 후보 핵심어
     """
+    # 핵심어는 c-TF-IDF 점수 순이라 앞쪽일수록 그 군집에만 두드러진 낱말이다
     return "·".join(keywords[:3]) if keywords else "이름 없음"
 
 
@@ -71,9 +74,11 @@ async def suggest_name(
         exemplars: 대표 민원 본문(마스킹본)
         client: deep 배포 LLM 호출기. None이면 핵심어 이름만 만든다
     """
+    # LLM이 꺼져 있거나 실패해도 후보 목록은 나와야 하므로 핵심어 이름을 먼저 만들어 둔다
     fallback = NameSuggestion(keyword_name(keywords), None, None)
     if client is None:
         return fallback
+    # 대표 민원은 200자까지만 보낸다. 주제를 알기엔 충분하고, 외부 전송량·토큰 비용을 줄인다
     lines = "\n".join(f"- {text[:200]}" for text in exemplars)
     try:
         draft = await client.generate(
@@ -83,5 +88,7 @@ async def suggest_name(
             response_model=CategoryDraft,
         )
     except AppError:
+        # 호출·형식 오류는 분석 전체를 멈출 일이 아니다. 담당자가 승인 때 이름을 고친다
         return fallback
+    # 이름은 15자 이내로 요청했지만 지키지 않을 수 있어 저장 전에 100자로 자른다
     return NameSuggestion(draft.name.strip()[:100], draft.definition.strip(), draft.group.strip())

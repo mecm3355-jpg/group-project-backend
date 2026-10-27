@@ -28,9 +28,12 @@ def build_profile(path: Path, extension: str, ocr: OcrOptions | None = None) -> 
     if extension in TEXT_EXTENSIONS:
         with open_text(path, extension) as text:
             return profile_text(text)
+    # 진단은 OCR이 없어도 끝나야 하므로 allow_missing_ocr로 연다. 이미지는 메타데이터만,
+    # 스캔 PDF는 "OCR 필요" 문제로 결과에 남는다
     if extension in DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS:
         with open_document(path, extension, ocr, allow_missing_ocr=True) as document:
             return profile_document(document)
+    # 업로드는 미지원 형식도 받아 두므로(category other) 여기서 처음 막힌다
     raise AppError(
         "ANALYSIS_NOT_SUPPORTED",
         f"{extension} 파일의 추출·진단은 아직 지원하지 않습니다.",
@@ -47,18 +50,23 @@ async def analyze(ctx: JobContext) -> None:
     파라미터:
         ctx: 작업 실행 정보
     """
+    # 진행률은 단계 경계만 대략 찍는다. 읽기·진단이 대부분의 시간을 쓰므로 10→90 구간을 준다
     await ctx.report("validating", 5)
+    # 원본이 지워졌거나 저장소가 바뀐 경우를 읽기 전에 분명한 오류 코드로 알린다
     path = ctx.storage.path(ctx.file.storage.key)
     if not path.is_file():
         raise AppError("SOURCE_MISSING", "원본 파일이 저장소에 없습니다.", 422)
 
     await ctx.report("parsing", 10)
+    # 파일 읽기·OCR은 동기 코드라 이벤트 루프를 막지 않도록 스레드로 넘긴다
+    # (막히면 워커의 종료 신호 처리와 DB 호출이 그동안 모두 멈춘다)
     profile = await asyncio.to_thread(
         build_profile, path, ctx.file.extension, ocr_options(ctx.settings)
     )
 
     await ctx.report("saving", 90)
     results = ResultRepository(ctx.db)
+    # 재처리할 때마다 덮어쓰지 않고 새 버전으로 쌓는다(schema.md processing_results.version)
     version = await results.next_version(ctx.file.id, "analysis")
     await results.insert(
         ResultDocument(

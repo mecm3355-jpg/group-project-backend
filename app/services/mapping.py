@@ -20,6 +20,7 @@ from app.schemas.dataset import (
 from app.services.llm import LlmClient
 from app.services.masking import mask_text
 
+# 프롬프트를 고치면 올린다(LLM 응답 캐시 키에 들어가 옛 응답을 다시 쓰지 않게 된다)
 PROMPT_VERSION = "column-mapping@1"
 
 SYSTEM_PROMPT = """당신은 여러 기관의 민원·신고 데이터를 하나로 합치는 데이터 엔지니어다.
@@ -45,6 +46,8 @@ constants: 열이 없지만 파일 전체에 같은 값이 분명한 경우(예:
 """
 
 # 열 이름 규칙(앞에 있는 단어일수록 우선). exclude에 걸리는 열은 제외
+# 필드 순서도 의미가 있다: 앞 필드가 먼저 열을 가져가고, 가져간 열은 뒤 필드가 못 쓴다.
+# 그래서 "번호"·"ID"처럼 여러 열에 걸리기 쉬운 source_id를 맨 뒤에 둔다
 RULES: dict[CanonicalField, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "content": (("상담내용", "민원내용", "신고내용", "본문", "내용", "요지"), ()),
     "title": (("제목",), ()),
@@ -61,8 +64,11 @@ RULES: dict[CanonicalField, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "result": (("처리결과", "처리상태", "결과"), ()),
     "source_id": (("민원ID", "신고번호", "민원번호", "번호", "ID"), ()),
 }
+# 한국 좌표 범위(제주 남단~휴전선 북쪽 여유, 서해 섬~독도). 두 범위가 겹치지 않아
+# 값 범위만으로 위도·경도 열이 뒤바뀌었는지 판단할 수 있다
 KOREA_LATITUDE = (33.0, 39.5)
 KOREA_LONGITUDE = (124.0, 132.0)
+# 파일명의 시군구 이름(예: "포항시_민원.csv" → 포항시). 지역 열이 없을 때 고정값 후보로 쓴다
 SIGUNGU = re.compile(r"([가-힣]{2,4}(?:시|군|구))")
 
 
@@ -77,6 +83,7 @@ def _number_range(statistics: dict[str, JsonValue], column: str) -> tuple[float,
     if not isinstance(stats, dict):
         return None
     low, high = stats.get("min"), stats.get("max")
+    # 날짜 열의 min·max는 문자열(ISO)이라 여기서 걸러진다. 좌표 판단에는 숫자 열만 필요하다
     if isinstance(low, int | float) and isinstance(high, int | float):
         return float(low), float(high)
     return None
@@ -103,8 +110,11 @@ def suggest_by_rules(
         file_name: 원래 파일명(시군구 고정값 추정에만 쓴다)
     """
     chosen: dict[CanonicalField, str] = {}
+    # 한 열을 두 필드에 매핑하지 않는다(AI 지시문의 "한 열을 두 필드에 쓰지 않는다"와 같은 원칙)
     used: set[str] = set()
     for field, (keywords, excludes) in RULES.items():
+        # 단어 순서대로 찾고, 단어마다 원본 열 순서에서 처음 맞는 열을 고른다.
+        # 영문 약어(lat·ID)를 위해 대소문자는 무시하고, 부분 일치("민원접수일" ⊃ "접수일")로 본다
         for keyword in keywords:
             match = next(
                 (
@@ -122,6 +132,8 @@ def suggest_by_rules(
                 break
 
     notes: list[str] = []
+    # 원본 중에 위도·경도 열 이름이 반대로 붙은 자료가 있어(PRD 3장 포항) 값 범위로 바로잡는다.
+    # 두 열 모두 범위가 분명히 반대일 때만 바꾸고, 담당자가 확인하도록 메모를 남긴다
     lat, lon = chosen.get("latitude"), chosen.get("longitude")
     if lat and lon:
         lat_span, lon_span = _number_range(statistics, lat), _number_range(statistics, lon)
@@ -129,6 +141,8 @@ def suggest_by_rules(
             chosen["latitude"], chosen["longitude"] = lon, lat
             notes.append(f"'{lat}'·'{lon}' 열의 값 범위가 이름과 반대여서 바꿔 매핑했습니다.")
 
+    # 기관별 파일은 지역 열 없이 파일명에만 시군구가 있는 경우가 많다. 통합 뒤 지역별 분포를
+    # 보려면 값이 필요해 파일명에서 고정값을 제안한다(확정은 담당자가 한다)
     constants = FieldConstants()
     if "region" not in chosen and (found := SIGUNGU.search(file_name)):
         constants.region = found.group(1)
@@ -146,11 +160,15 @@ def build_mapping_input(
         statistics: 분석 결과의 숫자·날짜 통계
         file_name: 원래 파일명
     """
+    # 파일명은 "홍길동_민원.csv"처럼 개인정보가 들어갈 수 있어 따로 먼저 마스킹한다.
+    # 범위(ranges)는 좌표 열 판단에 필요해 숫자 통계만 넣는다(호출한 쪽이 topValues를 뺀다)
     payload = {
         "fileName": mask_text(file_name).text,
         "columns": columns,
         "ranges": statistics,
     }
+    # 열 이름에도 개인정보가 섞일 수 있어(예: 담당자 이름을 머리글로 쓴 표) 전체를 한 번 더
+    # 마스킹한다. LLM 어댑터가 전송 직전에 다시 검사하므로 여기서 놓쳐도 밖으로 나가지 않는다
     return mask_text(json.dumps(payload, ensure_ascii=False, indent=1)).text
 
 
@@ -179,16 +197,21 @@ async def suggest_by_ai(
     notes = list(proposal.notes)
     chosen: dict[str, str] = {}
     used: set[str] = set()
+    # AI 응답은 스키마는 맞아도 내용이 틀릴 수 있다. 지시문을 어긴 매핑은 조용히 쓰지 않고
+    # 빼면서 메모로 남겨 담당자가 직접 채우게 한다
     for field in FIELD_LABELS:
         column = getattr(proposal.mapping, field)
         if not isinstance(column, str) or not column:
             continue
+        # 없는 열 이름(지어낸 이름, 마스킹으로 바뀐 이름)은 통합 작업에서 UNKNOWN_COLUMN이 된다
         if column not in columns:
             notes.append(f"AI가 제안한 '{column}' 열이 원본에 없어 {field} 매핑에서 뺐습니다.")
+        # 중복이면 FIELD_LABELS 순서에서 먼저 나온 필드가 열을 갖는다
         elif column in used:
             notes.append(f"'{column}' 열이 여러 필드에 제안되어 {field} 매핑에서 뺐습니다.")
         else:
             chosen[field] = column
             used.add(column)
+    # AI 응답 모델의 고정값을 API 응답 모델로 옮긴다(두 모델을 분리해 AI 스키마만 바꿀 수 있게)
     constants = FieldConstants(**proposal.constants.model_dump())
     return FieldMapping(**chosen), constants, notes

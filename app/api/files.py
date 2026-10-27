@@ -38,6 +38,7 @@ from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/files", tags=["files"])
 
+# 의존성 별칭: 라우터마다 Annotated[..., Depends(...)]를 반복하지 않도록 한 번만 정의한다
 Service = Annotated[FileService, Depends(get_file_service)]
 Cleaning = Annotated[CleaningService, Depends(get_cleaning_service)]
 Reports = Annotated[ReportService, Depends(get_report_service)]
@@ -48,6 +49,7 @@ Complaints = Annotated[ComplaintService, Depends(get_complaint_service)]
 @router.post(
     "",
     response_model=ApiResponse[FileUploadResult],
+    # 파일 문서는 즉시 만들어지므로 201. 분석 자체는 함께 만든 작업이 워커에서 처리한다
     status_code=http_status.HTTP_201_CREATED,
 )
 async def upload_file(
@@ -59,13 +61,16 @@ async def upload_file(
         service: 파일 서비스
         file: 업로드 파일
     """
+    # 확장자·실제 형식 검증, 저장, 문서·작업 생성은 서비스가 맡는다(CLAUDE.md 업로드 규칙)
     uploaded = await service.upload(file.file, file.filename)
     return ok(
         FileUploadResult(
+            # 명세서: fileId는 MongoDB _id를 문자열로 반환
             file_id=str(uploaded.file.id),
             original_name=uploaded.file.original_name,
             file_type=uploaded.file.extension,
             status=uploaded.file.status,
+            # 미지원 형식은 작업 없이 등록만 되므로(job=None) 그 이유를 알린다
             message="파일이 등록되었습니다."
             if uploaded.job
             else "파일이 등록되었습니다. 이 형식은 내용 분석을 지원하지 않습니다.",
@@ -88,6 +93,7 @@ async def merge_files(service: Datasets, request: MergeRequest) -> ApiResponse[M
         service: 통합 데이터셋 서비스
         request: 합칠 파일과 파일별 매핑
     """
+    # 통합 파일 문서를 먼저 만들고 합치기는 워커 작업으로 넘긴다. 오래 걸릴 수 있어 202로 응답
     merged, job = await service.start_merge(request)
     return ok(
         MergeStartResult(
@@ -105,6 +111,7 @@ async def list_files(
     status: Annotated[FileStatus | None, Query(description="상태 필터")] = None,
     q: Annotated[str | None, Query(max_length=200, description="파일명 검색어")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
+    # 페이지 크기 상한 100: 한 요청이 컬렉션을 통째로 읽지 않도록 막는다
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ApiResponse[FileList]:
     """파일 목록을 최신 업로드 순으로 조회하고 상태·파일명으로 검색한다.
@@ -116,6 +123,7 @@ async def list_files(
         page: 페이지 번호(1부터)
         size: 페이지 크기(최대 100)
     """
+    # total은 필터를 적용한 전체 건수라 프런트엔드가 페이지 수를 계산할 수 있다
     items, total = await service.search(status, q, page, size)
     return ok(
         FileList(
@@ -143,6 +151,7 @@ async def delete_file(service: Service, file_id: str) -> ApiResponse[FileDeleteR
         service: 파일 서비스
         file_id: 파일 ID
     """
+    # 작업·결과·산출물·민원 데이터까지 서비스가 함께 지운다(명세서: 파일 및 관련 결과 삭제)
     await service.delete(file_id)
     return ok(FileDeleteResult(file_id=file_id, message="파일이 삭제되었습니다."))
 
@@ -170,6 +179,7 @@ async def process_file(service: Service, file_id: str) -> ApiResponse[ProcessSta
         service: 파일 서비스
         file_id: 파일 ID
     """
+    # 명세서 권장대로 결과를 기다리지 않고 작업 ID만 바로 돌려준다(202). 결과는 작업 조회로 확인
     job = await service.start_processing(file_id)
     return ok(
         ProcessStartResult(
@@ -189,6 +199,7 @@ async def get_quality(service: Service, file_id: str) -> ApiResponse[QualityRepo
         service: 파일 서비스
         file_id: 파일 ID
     """
+    # 재처리로 분석 버전이 여러 개일 수 있어 가장 최근 버전만 보여준다
     return ok(QualityReport.from_document(await service.latest_analysis(file_id)))
 
 
@@ -200,10 +211,12 @@ async def suggest_cleaning(service: Cleaning, file_id: str) -> ApiResponse[Clean
         service: 정제 서비스
         file_id: 파일 ID
     """
+    # 추천은 저장된 진단 결과만 읽어 빨리 끝나므로 작업을 만들지 않고 바로 응답한다
     analysis, suggestions = await service.suggest(file_id)
     return ok(
         CleaningSuggestions(
             file_id=file_id,
+            # 근거 분석 버전을 알려, 재처리로 진단이 바뀌었는지 확인하게 한다
             based_on_version=analysis.version,
             suggestions=[
                 SuggestedRule(rule=s.rule, reason=s.reason, expected_changes=s.expected_changes)
@@ -228,6 +241,7 @@ async def clean_file(
         file_id: 파일 ID
         request: 적용할 규칙 목록(trim_whitespace, remove_duplicates, fill_missing)
     """
+    # 명세서: AI가 만든 코드가 아니라 미리 정의된 규칙만 받는다. 규칙 검증은 CleanRequest가 한다
     job = await service.start_cleaning(file_id, request)
     return ok(
         CleanStartResult(
@@ -244,6 +258,7 @@ async def list_versions(
     service: Cleaning,
     file_id: str,
     result_type: Annotated[
+        # 파이썬 내장 이름 type을 피하려고 변수는 result_type, 쿼리 이름은 type으로 둔다
         ResultType | None, Query(alias="type", description="결과 종류 필터")
     ] = None,
 ) -> ApiResponse[VersionList]:
@@ -262,6 +277,7 @@ async def list_versions(
 async def export_file(
     service: Cleaning,
     file_id: str,
+    # 명세서 경로가 ?format=확장자라 쿼리 이름은 format(내장 함수 이름이라 변수는 fmt)
     fmt: Annotated[ExportFormat, Query(alias="format", description="csv, json, xlsx")],
     version: Annotated[int | None, Query(ge=1, description="정제 버전. 생략하면 최신")] = None,
 ) -> FileResponse:
@@ -274,6 +290,8 @@ async def export_file(
         version: 정제 결과 버전(생략하면 최신)
     """
     export = await service.export(file_id, fmt, version)
+    # 정제 산출물(CSV)을 json·xlsx로 바꾼 임시 파일은 전송이 끝난 뒤 지운다.
+    # CSV는 보관 중인 산출물을 그대로 보내므로(temporary=False) 지우면 안 된다
     cleanup = BackgroundTask(export.path.unlink, missing_ok=True) if export.temporary else None
     return FileResponse(
         export.path, media_type=export.media_type, filename=export.filename, background=cleanup
@@ -297,6 +315,7 @@ async def start_analysis(
         file_id: 파일 ID
         request: 분석 요청(열 매핑·분리 규칙·속성 추출 방식)
     """
+    # 민원 분석은 임베딩·군집화로 오래 걸리므로 작업으로 등록하고 202로 응답한다
     job = await service.start_analysis(file_id, request)
     return ok(
         AnalysisStartResult(
@@ -316,6 +335,7 @@ async def get_analysis(service: Service, file_id: str) -> ApiResponse[AnalysisRe
         service: 파일 서비스
         file_id: 파일 ID
     """
+    # 조회는 작업 없이 저장된 최신 분석 결과를 읽으므로 파일 서비스를 쓴다
     return ok(AnalysisResult.from_document(await service.latest_analysis(file_id)))
 
 
@@ -331,6 +351,7 @@ async def create_report(service: Reports, file_id: str) -> ApiResponse[ReportSta
         service: 리포트 서비스
         file_id: 파일 ID
     """
+    # LLM 호출이 오래 걸릴 수 있어 작업으로 넘긴다. 결과는 processing_results(resultType=report)
     job = await service.start_report(file_id)
     return ok(
         ReportStartResult(
@@ -352,4 +373,5 @@ async def suggest_mapping(service: Datasets, file_id: str) -> ApiResponse[Mappin
         service: 통합 데이터셋 서비스
         file_id: 파일 ID
     """
+    # 제안만 돌려주고 저장하지 않는다. 사용자가 고친 매핑은 merge 요청에 담겨 온다
     return ok(await service.suggest_mapping(file_id))

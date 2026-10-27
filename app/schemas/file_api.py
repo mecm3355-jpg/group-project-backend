@@ -12,6 +12,7 @@ class FileUploadResult(ApiModel):
 
     file_id: str
     original_name: str
+    # fileType은 명세서 예시 이름. files에 같은 필드가 없어 확장자(csv 등)를 넣는다
     file_type: str
     status: FileStatus
     message: str
@@ -41,6 +42,7 @@ class FileDetail(ApiModel):
         """
         return cls(
             file_id=str(doc.id),
+            # storage(서버 내부 경로)는 일부러 빼고 옮긴다. 경로가 노출되면 저장 구조가 드러난다
             original_name=doc.original_name,
             extension=doc.extension,
             mime_type=doc.mime_type,
@@ -50,6 +52,7 @@ class FileDetail(ApiModel):
             processing_capabilities=doc.processing_capabilities,
             created_at=doc.created_at,
             updated_at=doc.updated_at,
+            # 프런트엔드가 이 ID로 바로 GET /jobs/{job_id}를 불러 진행 상황을 본다
             last_job_id=None if doc.last_job_id is None else str(doc.last_job_id),
         )
 
@@ -58,6 +61,7 @@ class FileList(ApiModel):
     """GET /api/v1/files 응답 — 한 페이지의 파일 목록과 전체 개수."""
 
     items: list[FileDetail]
+    # 필터를 적용한 전체 개수(이 페이지 개수가 아님). page·size는 요청 값을 되돌려 준다
     total: int
     page: int
     size: int

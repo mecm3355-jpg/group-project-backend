@@ -8,6 +8,7 @@ from typing import Literal
 
 from app.schemas.common import ApiModel
 
+# LLM이 정해진 값만 내도록 Literal로 제한한다(품질 진단 Severity와 같은 세 단계)
 Level = Literal["high", "medium", "low"]
 
 
@@ -15,6 +16,7 @@ class ReportIssue(ApiModel):
     """품질 문제 하나에 대한 해석."""
 
     issue: str
+    # LLM이 추정한 원인(확인된 사실이 아님)
     likely_cause: str
     impact: str
     severity: Level
@@ -36,4 +38,5 @@ class AiReport(ApiModel):
     quality_issues: list[ReportIssue]
     cleaning_recommendations: list[ReportRecommendation]
     analysis_suggestions: list[str]
+    # 표본 한계·추측 여부 등 리포트를 해석할 때의 주의사항
     caveats: list[str]

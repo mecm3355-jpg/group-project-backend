@@ -12,11 +12,14 @@ class JobDetail(ApiModel):
     """
 
     job_id: str
+    # DB의 field(대상 파일 ID)를 명세 예시 이름 fileId로 내보낸다
     file_id: str
     type: str
     status: JobStatus
+    # 0~100(%). 프런트엔드 진행 막대에 그대로 쓴다
     progress: int
     stage: str
+    # 실패했을 때만 채운다. code로 분기하고 message를 사용자에게 보여 준다
     error: JobError | None
     started_at: datetime | None
     completed_at: datetime | None
@@ -39,5 +42,6 @@ class JobDetail(ApiModel):
             error=doc.error,
             started_at=doc.started_at,
             completed_at=doc.completed_at,
+            # DB 표 기준 이름(createAt)을 응답 이름(createdAt)으로 바꾸는 곳
             created_at=doc.create_at,
         )

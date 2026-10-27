@@ -19,7 +19,9 @@ async def health(mongo: Annotated[Mongo, Depends(get_mongo)]) -> ApiResponse[Hea
         mongo: 의존성으로 주입되는 Mongo 인스턴스
     """
     try:
+        # 서버가 떠 있어도 DB가 끊기면 쓸 수 없으므로 실제로 ping을 보내 확인한다
         await mongo.ping()
     except PyMongoError as exc:
+        # 503: 서버 자체 오류가 아니라 의존 서비스 일시 장애. 로드밸런서가 재시도하거나 빼도록 한다
         raise AppError("DB_UNAVAILABLE", "데이터베이스에 연결할 수 없습니다.", 503) from exc
     return ok(HealthStatus(status="ok", database="ok"))

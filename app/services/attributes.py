@@ -26,8 +26,12 @@ from app.services.llm import LlmClient
 
 T = TypeVar("T")
 
+# 결과 행마다 남기는 분석기 이름·버전(PRD 6장). 사전·규칙을 고치면 번호를 올려 이전 결과와
+# 구분한다
 RULE_ANALYZER = "rule-dict@2"
+# 원형 분류로 보강한 행은 규칙 분석기 이름 뒤에 이 표시를 붙여, 어느 값이 임베딩 추정인지 남긴다
 PROTOTYPE_SUFFIX = "+proto@1"
+# 프롬프트(LLM_SYSTEM)를 고치면 올린다. LLM 응답 캐시가 이 버전 + 입력 해시로 묶인다(PRD 6.1)
 LLM_PROMPT_VERSION = "complaint-attributes@1"
 
 # 시설 사전: 본문 표현 → 표준 이름. 본문에서 가장 먼저 나온 시설을 대상 시설로 본다
@@ -62,6 +66,8 @@ FACILITY_SYNONYMS: dict[str, str] = {
 # 장소에 가까운 시설. 본문에 다른 시설이 있으면 그쪽을 대상 시설로 본다
 # (예: "산책로 운동기구가 고장" → 운동기구)
 PLACE_LIKE_FACILITIES = {"도로", "인도", "산책로", "교량", "버스정류장", "자전거길", "주차장"}
+# 긴 표현부터 시도해야 "점자블록"이 "점자"보다, "버스정류장"이 "정류장"보다 먼저 맞는다.
+# IGNORECASE는 cctv·wifi처럼 영문 대소문자가 섞여 쓰이는 표현용(사전 키는 소문자)
 FACILITY_PATTERN = re.compile(
     "|".join(re.escape(word) for word in sorted(FACILITY_SYNONYMS, key=len, reverse=True)),
     re.IGNORECASE,
@@ -78,9 +84,12 @@ DONG_STOPWORDS = {
 LANDMARK_END = re.compile(
     r"\s*(?:에서|에 있는|관련하여|을 지나는데|를 지나는데|쪽을|쪽에서|입니다|이고|,|\.)"
 )
+# 끝 표현을 못 찾아 문장 끝까지 이어 붙은 경우를 거르는 길이. 이보다 길면 지물이 아니라
+# 문장 일부로 보고 버린다
 LANDMARK_MAX_CHARS = 30
 
-# 긴급도(PRD 5.5): 인명·사고 위험 = 긴급, 생활 지장 = 높음, 불편 = 보통, 건의·문의 = 낮음
+# 긴급도(PRD 5.5): 인명·사고 위험 = 긴급, 생활 지장 = 높음, 불편 = 보통, 건의·문의 = 낮음.
+# 높은 단계부터 검사해, 위험 표현과 건의 표현이 함께 있으면 더 높은 쪽을 택한다
 URGENCY_RULES: list[tuple[Urgency, re.Pattern[str]]] = [
     ("긴급", re.compile(
         r"사고|다칠|다쳤|부상|넘어질|넘어졌|붕괴|감전|화재|불이 |가스 냄새|위험|생명"
@@ -89,6 +98,7 @@ URGENCY_RULES: list[tuple[Urgency, re.Pattern[str]]] = [
     ("보통", re.compile(r"불편|지저분|냄새|소음|시끄")),
     ("낮음", re.compile(r"건의|제안|문의|궁금|바랍니다|좋겠습니다")),
 ]  # fmt: skip
+# 재신고 표현(PRD 5.5). "또 "는 "또한"·"또는"을 피하려고 뒤에 공백을 붙였다
 REPEAT = re.compile(r"다시|또 |여러 번|반복|계속|재발|지난(?:달|주|번)에도|재신고|몇 번째|이전에도")
 # 요청 유형: 앞에 있는 규칙이 먼저 적용된다
 REQUEST_RULES: list[tuple[RequestType, re.Pattern[str]]] = [
@@ -98,6 +108,8 @@ REQUEST_RULES: list[tuple[RequestType, re.Pattern[str]]] = [
     ("질의", re.compile(r"궁금|문의|알려|되나요|인가요|\?")),
     ("불만", re.compile(r"불만|화가|짜증|어이없|왜 ")),
 ]  # fmt: skip
+# 영향 대상: 취약계층(장애인·어린이·노인)을 먼저 보고, 언급이 없을 때만 일반으로 둔다.
+# 일반 대상 표현조차 없으면 근거가 없으므로 None
 AFFECTED_RULES: list[tuple[Affected, re.Pattern[str]]] = [
     ("장애인", re.compile(r"장애인|휠체어|시각장애|점자")),
     ("어린이", re.compile(r"어린이|아이|아동|학생|유모차|초등|등하교|통학")),
@@ -125,15 +137,18 @@ def extract_place(text: str) -> Place:
     파라미터:
         text: 마스킹된 본문
     """
+    # 본문에서 처음 나온 진짜 동 이름 하나만 쓴다("운동"·"정면" 같은 일반 낱말은 건너뜀)
     for match in DONG.finditer(text):
         dong = match.group(1)
         if dong in DONG_STOPWORDS:
             continue
+        # 동 이름 바로 뒤부터 조사·서술 표현이 나오기 전까지를 지물로 본다
         rest = text[match.end() :].lstrip()
         end = LANDMARK_END.search(rest)
         landmark = rest[: end.start()].strip() if end else None
         if landmark and len(landmark) > LANDMARK_MAX_CHARS:
             landmark = None
+        # 빈 문자열 지물은 None으로 바꿔 "근거 없음"과 같게 다룬다
         return Place(dong=dong, landmark=landmark or None)
     return Place()
 
@@ -145,8 +160,11 @@ def extract_by_rules(record: ComplaintRecord) -> Attributes:
         record: 마스킹된 민원
     """
     text = record.text
+    # 본문에 나온 순서대로 시설을 표준 이름으로 바꾼다. 장소 성격의 시설(도로·산책로 등)은
+    # 다른 시설이 없을 때만 대상 시설로 쓴다
     found = [FACILITY_SYNONYMS[m.group(0).lower()] for m in FACILITY_PATTERN.finditer(text)]
     specific = [f for f in found if f not in PLACE_LIKE_FACILITIES]
+    # 각 속성은 규칙에 걸리는 표현이 없으면 None으로 둔다(추측하지 않음, PRD 5.5)
     return Attributes(
         record_id=record.record_id,
         facility=specific[0] if specific else found[0] if found else None,
@@ -191,9 +209,13 @@ async def extract_by_llm(
         batch_size: 한 번에 보낼 민원 수
     """
     result = LlmExtraction()
+    # 배포 이름과 프롬프트 버전을 분석기 이름에 넣어, 어느 모델·프롬프트로 뽑은 값인지 남긴다
     analyzer = f"llm:{client.usage.deployment}:{LLM_PROMPT_VERSION}"
+    # 여러 건을 한 번에 묶으면 호출 수와 고정 프롬프트 토큰이 줄어든다(PRD 6.1).
+    # 너무 크게 묶으면 응답이 길어져 형식이 깨질 때 잃는 건수가 커진다
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
+        # 민원마다 [id]를 앞에 붙여, 응답 항목을 입력 민원과 id로 다시 맞춘다
         lines = "\n".join(f"[{r.record_id}] {r.text}" for r in batch)
         try:
             reply = await client.generate(
@@ -203,8 +225,10 @@ async def extract_by_llm(
                 response_model=LlmAttributeBatch,
             )
         except AppError as exc:
+            # 한 묶음 실패로 작업을 멈추지 않고 행 단위 오류로 남긴다(PRD 10장 내결함)
             result.errors.extend(f"{r.record_id}: {exc.code}" for r in batch)
             continue
+        # LLM이 순서를 바꾸거나 일부를 빼먹을 수 있어 위치가 아니라 id로 맞춘다
         by_id = {item.id: item for item in reply.items}
         for record in batch:
             item = by_id.get(record.record_id)
@@ -301,20 +325,25 @@ def refine_with_prototypes(
         return attributes
     updates: list[dict[str, str]] = [{} for _ in attributes]
     for name, classes in PROTOTYPES.items():
+        # 값마다 원형 문장 여러 개의 평균 벡터를 중심으로 쓴다. 문장 하나보다 표현 차이에 덜
+        # 흔들린다. 민원과 같은 임베더라 같은 벡터 공간에서 비교된다
         labels = list(classes)
         centroids = normalize(np.stack([embedder.embed(classes[c]).mean(axis=0) for c in labels]))
         similarities = vectors @ centroids.T
         order = np.argsort(-similarities, axis=1)
         for index, attr in enumerate(attributes):
+            # 규칙이 이미 채운 값은 본문 표현이라는 직접 근거가 있으므로 덮어쓰지 않는다
             if getattr(attr, name) is not None:
                 continue
             first, second = int(order[index, 0]), int(order[index, 1])
             top = float(similarities[index, first])
+            # 1위가 충분히 비슷하고 2위와도 구분될 때만 채운다. 아니면 근거가 약해 비워 둔다
             if (
                 top >= config.prototype_min_similarity
                 and top - float(similarities[index, second]) >= config.prototype_margin
             ):
                 updates[index][name] = labels[first]
+    # 하나라도 보강된 행만 새 객체로 만들고 분석기 이름에 원형 표시를 붙인다
     return [
         attr.model_copy(update={**update, "analyzer": attr.analyzer + PROTOTYPE_SUFFIX})
         if update

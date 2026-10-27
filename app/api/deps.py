@@ -28,6 +28,7 @@ def get_app_settings(request: Request) -> Settings:
         request: 현재 요청(앱 상태에서 설정을 꺼낸다)
     """
     settings = request.app.state.settings
+    # app.state는 타입 정보가 없으므로 mypy와 잘못된 등록을 함께 잡기 위해 확인한다
     assert isinstance(settings, Settings)
     return settings
 
@@ -42,6 +43,8 @@ def get_file_service(
         mongo: Mongo 인스턴스
         settings: 앱 설정
     """
+    # 저장소·서비스는 가벼운 래퍼라 요청마다 새로 만들고, 비싼 DB 연결만 Mongo로 공유한다.
+    # 민원·검토 저장소는 파일 삭제 시 관련 민원 데이터까지 지우기 위해 넘긴다
     return FileService(
         FileRepository(mongo.db),
         JobRepository(mongo.db),
@@ -68,6 +71,7 @@ def get_dashboard_service(mongo: Annotated[Mongo, Depends(get_mongo)]) -> Dashbo
     파라미터:
         mongo: Mongo 인스턴스
     """
+    # 대시보드는 읽기 전용 집계라 저장소(파일 쓰기)가 필요 없다
     return DashboardService(
         FileRepository(mongo.db), JobRepository(mongo.db), ResultRepository(mongo.db)
     )
@@ -101,6 +105,8 @@ def get_report_service(
         mongo: Mongo 인스턴스
         settings: 앱 설정
     """
+    # 리포트는 원본 파일을 다시 읽지 않고 저장된 결과만 쓰므로 저장소 없이 만든다.
+    # LLM 설정(Azure 배포 이름 등)은 settings로 넘긴다
     return ReportService(
         FileRepository(mongo.db),
         JobRepository(mongo.db),

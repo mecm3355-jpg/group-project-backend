@@ -23,6 +23,7 @@ class CleaningSuggestions(ApiModel):
     """POST /api/v1/files/{file_id}/cleaning-suggestions 응답."""
 
     file_id: str
+    # 추천 근거가 된 분석 결과 버전
     based_on_version: int
     suggestions: list[SuggestedRule]
 
@@ -58,6 +59,7 @@ class VersionItem(ApiModel):
     created_at: datetime
     score: int | None
     issue_count: int
+    # analysis.rowCount를 그대로 옮긴다. 표 형식이 아니면 없어서 null일 수 있다
     row_count: JsonValue
     cleaning: dict[str, JsonValue] | None
     ai: dict[str, JsonValue] | None
@@ -71,6 +73,7 @@ class VersionItem(ApiModel):
         """
         cleaning: dict[str, JsonValue] | None = None
         if doc.result_type == "cleaning":
+            # artifacts에는 서버 저장 경로가 들어 있어 응답에서 뺀다. 내려받기는 export API로 한다
             cleaning = {k: v for k, v in doc.cleaning.items() if k != "artifacts"}
         return cls(
             result_type=doc.result_type,
@@ -81,6 +84,7 @@ class VersionItem(ApiModel):
             issue_count=len(doc.quality.issues),
             row_count=doc.analysis.get("rowCount"),
             cleaning=cleaning,
+            # 빈 객체({})로 저장된 비해당 결과는 null로 내보내 프런트엔드가 쉽게 구분하게 한다
             ai=doc.ai or None,
         )
 

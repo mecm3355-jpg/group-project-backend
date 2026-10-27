@@ -23,6 +23,7 @@ from app.services.masking import mask_text
 from app.services.profiling import without_raw_values
 from app.services.rule_report import build_rule_report
 
+# 프롬프트를 고치면 올린다. 결과(ai.promptVersion)에 남겨 어떤 프롬프트로 쓴 리포트인지 추적한다
 PROMPT_VERSION = "file-report@2"
 
 SYSTEM_PROMPT = """당신은 공공 데이터의 품질을 진단하는 데이터 분석가다.
@@ -57,6 +58,8 @@ def _summary_of(result: ResultDocument) -> dict[str, JsonValue]:
     파라미터:
         result: 분석 또는 정제 결과 문서
     """
+    # version은 리포트가 어느 결과를 근거로 썼는지 LLM이 구분하게 넣는다.
+    # 품질 문제의 location은 열 이름이라 그대로 두고, 원본 값 빈도(topValues 등)만 뺀다
     return {
         "version": result.version,
         "quality": result.quality.model_dump(mode="json", by_alias=True),
@@ -76,6 +79,7 @@ def build_report_input(
         analysis: 최신 분석 결과
         cleaning: 최신 정제 결과(없으면 None)
     """
+    # 파일 정보는 데이터 종류를 짐작할 만큼만(확장자·분류·크기) 보낸다
     payload: dict[str, JsonValue] = {
         "file": {
             "extension": file.extension,
@@ -84,6 +88,7 @@ def build_report_input(
         },
         "latestAnalysis": _summary_of(analysis),
     }
+    # 정제를 했으면 적용 규칙·변경 건수·정제 전후 요약을 함께 보내 "정제 후 남은 문제"를 쓰게 한다
     if cleaning is not None:
         payload["latestCleaning"] = {
             **_summary_of(cleaning),
@@ -92,7 +97,11 @@ def build_report_input(
             "before": cleaning.cleaning.get("before"),
             "after": cleaning.cleaning.get("after"),
         }
+    # ensure_ascii=False: 한글을 \uXXXX로 바꾸지 않아야 마스킹 패턴이 맞고 토큰도 덜 든다.
+    # default=str은 날짜·ObjectId처럼 JSON에 없는 타입을 문자열로 바꾼다
     text = json.dumps(payload, ensure_ascii=False, indent=1, default=str)
+    # 1차 마스킹: 열 이름·정제 규칙 값 등에 섞인 전화번호·이메일 등을 가린다
+    # (LLM 어댑터가 전송 직전에 한 번 더 검사하는 것이 2차)
     return mask_text(text).text
 
 
@@ -111,16 +120,22 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
         """
         await ctx.report("validating", 5)
         results = ResultRepository(ctx.db)
+        # API가 작업을 만들 때 확인했지만, 그 사이 결과가 지워졌을 수 있어 워커에서 다시 본다.
+        # 이미 받은 작업의 실행 실패라 404가 아닌 422로 작업 오류에 남긴다
         analysis = await results.get_latest(ctx.file.id, "analysis")
         if analysis is None:
             raise AppError(
                 "RESULT_NOT_FOUND", "진단 결과가 없습니다. 먼저 추출·진단을 실행하세요.", 422
             )
+        # 정제 결과는 없어도 된다(진단만 한 파일도 리포트를 만들 수 있다)
         cleaning = await results.get_latest(ctx.file.id, "cleaning")
         masked_input = build_report_input(ctx.file, analysis, cleaning)
         llm = llm_factory(ctx.settings)
 
+        # LLM 호출이 가장 오래 걸리는 단계라 진행률 20~90 구간을 이 단계에 둔다
         await ctx.report("ai_summary", 20)
+        # LLM 연결 정보가 없는 환경(로컬·테스트·키 미발급)에서도 리포트 기능이 동작하도록
+        # 같은 AiReport 형식의 규칙 리포트로 대신한다
         if llm is None:
             report_body = build_rule_report(analysis, cleaning)
         else:
@@ -131,6 +146,7 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
                 response_model=AiReport,
             )
 
+        # 리포트는 덮어쓰지 않고 새 버전으로 쌓는다(processing_results는 버전별 보관)
         await ctx.report("saving", 90)
         await results.insert(
             ResultDocument(
@@ -140,6 +156,7 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
                 version=await results.next_version(ctx.file.id, "report"),
                 ai={
                     "report": report_body.model_dump(mode="json", by_alias=True),
+                    # 근거 버전을 남겨, 재진단·재정제 뒤 이 리포트가 낡았는지 알 수 있게 한다
                     "basedOn": {
                         "analysisVersion": analysis.version,
                         "cleaningVersion": cleaning.version if cleaning else None,
@@ -147,6 +164,7 @@ def make_report_handler(llm_factory: LlmFactory) -> JobHandler:
                     # llm: AI 리포트, rule: LLM 없이 규칙으로 쓴 리포트
                     "method": "rule" if llm is None else "llm",
                     "promptVersion": None if llm is None else PROMPT_VERSION,
+                    # 토큰 사용량은 비용 추적용(규칙 리포트는 호출이 없어 None)
                     "usage": None if llm is None else llm.usage.to_record(),
                 },
             )
@@ -161,7 +179,9 @@ def default_llm(settings: Settings) -> LlmClient | None:
     파라미터:
         settings: 앱 설정
     """
+    # 리포트는 여러 진단 결과를 엮어 원인·영향을 추론해야 해서 빠른 배포 대신 deep 배포를 쓴다
     return create_llm_client(settings, "deep") if llm_configured(settings, "deep") else None
 
 
+# 워커가 작업 종류 "report"에 연결하는 실제 처리기
 report = make_report_handler(default_llm)

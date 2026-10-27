@@ -50,6 +50,7 @@ from app.services.file_service import parse_file_id
 from app.services.llm import llm_configured
 from app.services.storage import LocalStorage
 
+# 민원 분석을 받는 확장자: 추출기(complaint_extraction)가 다루는 형식 전부
 ANALYZABLE = TABULAR_EXTENSIONS | DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS | TEXT_EXTENSIONS
 
 
@@ -61,6 +62,7 @@ def parse_object_id(value: str, code: str, message: str) -> ObjectId:
         code: 오류 코드
         message: 오류 메시지
     """
+    # 형식이 틀린 ID는 어차피 존재할 수 없는 문서이므로 422가 아니라 404로 응답한다
     try:
         return ObjectId(value)
     except (InvalidId, TypeError) as exc:
@@ -113,6 +115,8 @@ class ComplaintService:
             file_id: 파일 ID 문자열
             request: 분석 요청
         """
+        # 워커에서 실패할 요청은 작업을 만들기 전에 여기서 걸러, 사용자가 작업 상태를 기다리지
+        # 않고 바로 원인을 알 수 있게 한다
         doc = await self._files.get(parse_file_id(file_id))
         if doc is None:
             raise AppError("FILE_NOT_FOUND", "파일을 찾을 수 없습니다.", 404)
@@ -140,8 +144,11 @@ class ComplaintService:
                 "attributeMethod를 rule로 보내면 규칙 방식으로 분석합니다.",
                 503,
             )
+        # 같은 파일을 동시에 두 번 분석하면 이전 민원 교체(retire)가 서로 엉키므로 막는다
         if await self._jobs.has_active(doc.id):
             raise AppError("JOB_ALREADY_RUNNING", "이미 처리 중인 작업이 있습니다.", 409)
+        # processing_jobs에는 기준 스키마에 없는 필드를 넣지 않으므로, 요청 내용은 작업 ID로
+        # 찾을 수 있는 파일에 둔다. 작업보다 먼저 써야 워커가 작업을 집었을 때 파일이 있다
         job = JobDocument(field=doc.id, type=COMPLAINT_ANALYSIS_JOB_TYPE)
         await asyncio.to_thread(
             self._storage.write_text, job_params_key(job.id), request.model_dump_json()
@@ -188,6 +195,7 @@ class ComplaintService:
         파라미터:
             version: 체계 버전
         """
+        # 체계 버전은 승인마다 1씩 올라 1..latest가 빠짐없이 있다. 아직 승인이 없으면 latest=0
         latest = await self._categories.latest_version()
         target = latest if version is None else version
         if version is not None and not 1 <= version <= latest:
@@ -204,6 +212,7 @@ class ComplaintService:
             period: 처리 월 필터
         """
         found = await self._candidates.list_by(decision, period)
+        # 후보마다 따로 조회하지 않고 대표 민원을 한 번에 읽는다. 재분석으로 지워진 민원은 빠진다
         exemplar_ids = [i for c in found for i in c.exemplar_ids]
         texts = {c.id: c.content_masked for c in await self._complaints.get_many(exemplar_ids)}
         return [(c, [texts[i] for i in c.exemplar_ids if i in texts]) for c in found]
@@ -224,9 +233,11 @@ class ComplaintService:
         파라미터:
             version: 새 체계 버전
         """
+        # 잡음으로 빠졌거나 다른 후보에 들었던 풀 민원도 새 카테고리에 들어갈 수 있다(PRD 4장 6단계)
         pool = await self._complaints.unassigned_pool()
         if not pool:
             return 0
+        # 벡터 산출물이 없는 민원은 비교할 수 없어 풀에 그대로 둔다(다음 분석 때 다시 계산된다)
         vectors = await self._member_vectors(pool)
         pool = [c for c in pool if c.id in vectors]
         if not pool:
@@ -248,6 +259,7 @@ class ComplaintService:
             taxonomy,
             load_analysis_config().assignment,
         )
+        # 기준을 넘고 애매하지 않은 건만 고친다. 나머지는 미배정으로 남아 다음 달 발견에 다시 든다
         updates: list[tuple[ObjectId, dict[str, object]]] = []
         for complaint, result in zip(pool, results, strict=True):
             if result.status == "assigned" and result.category_id is not None:
@@ -273,6 +285,8 @@ class ComplaintService:
         파라미터:
             added: 새로 승인한 카테고리(version은 이 함수가 정한다)
         """
+        # 체계는 버전마다 카테고리 전체를 새 문서로 복사해 둔다. 그래야 과거 버전 기준 통계를
+        # 그 시점 체계 그대로 다시 볼 수 있다(categoryId + version 고유, PRD 5.2)
         latest = await self._categories.latest_version()
         version = latest + 1
         carried = [
@@ -301,10 +315,13 @@ class ComplaintService:
             raise AppError("CANDIDATE_NOT_FOUND", "후보를 찾을 수 없습니다.", 404)
         if candidate.decision != "pending":
             raise AppError("CANDIDATE_DECIDED", "이미 결정된 후보입니다.", 409)
+        # 군집은 통계적 묶음일 뿐이라 업무상 한 유형인지는 사람이 판단한다. 그래서 후보는 자동으로
+        # 카테고리가 되지 않고 여기서 담당자 결정을 거친다(PRD 4장 6단계)
         members = await self._complaints.by_candidate(candidate.id)
         latest = await self._categories.latest_version()
         now = utc_now()
 
+        # 보류: 체계는 그대로 두고 결정만 기록한다. 소속 민원은 미배정으로 남는다
         if request.decision == "held":
             await self._candidates.decide(candidate.id, "held", request.decided_by, now)
             return CandidateDecisionResult(
@@ -316,6 +333,8 @@ class ComplaintService:
                 retro_assigned=0,
             )
 
+        # 합치기: 기존 카테고리에 소속 민원만 배정한다. 카테고리 중심은 승인 시점 값으로 고정이라
+        # 바꾸지 않고(PRD 5.3), 새 카테고리가 없으므로 체계 버전도 올리지 않는다
         if request.decision == "merged":
             target_id = request.merged_into_category_id
             target = (
@@ -338,6 +357,8 @@ class ComplaintService:
                 retro_assigned=0,
             )
 
+        # 승인: 담당자가 고친 이름·그룹·정의가 있으면 그것을, 없으면 제안 초안을 쓴다.
+        # 상위 그룹은 집계에 쓰이므로(PRD 5.4) 비어 있으면 승인하지 않는다
         name = request.name or candidate.suggested_name
         group = request.group or candidate.suggested_group
         if not group:
@@ -349,8 +370,12 @@ class ComplaintService:
                 "후보 민원의 임베딩 산출물이 없어 중심을 계산할 수 없습니다.",
                 409,
             )
+        # 중심 = 승인 시점 소속 민원 벡터의 평균(정규화). 이후 배정된 민원으로 옮기지 않아
+        # 카테고리 의미가 매달 조금씩 넓어지는 것을 막는다(PRD 5.3 중심 고정)
         matrix = np.stack(list(vectors.values())).astype(np.float32)
         centroid = normalize(matrix.mean(axis=0, keepdims=True))[0]
+        # categoryId는 이름이 바뀌어도 유지되는 번호라 지금까지 쓴 가장 큰 번호 다음을 쓴다.
+        # 핵심어 최대 10개·대표 민원 5건은 categories 스키마 설명을 따른다(PRD 5.2)
         category = CategoryDocument(
             category_id=f"CAT-{await self._categories.max_category_number() + 1:04d}",
             version=latest + 1,
@@ -365,10 +390,13 @@ class ComplaintService:
             approved_by=request.decided_by,
             approved_at=now,
         )
+        # 결정 기록은 pending일 때만 바뀐다. 두 사람이 동시에 승인하면 한쪽만 성공해, 같은 후보로
+        # 카테고리가 둘 생기지 않는다
         if not await self._candidates.decide(
             candidate.id, "approved", request.decided_by, now, category_id=category.category_id
         ):
             raise AppError("CANDIDATE_DECIDED", "이미 결정된 후보입니다.", 409)
+        # 새 버전 체계를 만들고, 후보 소속 민원을 배정한 뒤, 남은 풀을 새 체계로 소급 배정한다
         version = await self._new_version(category)
         await self._assign_members(members, category, version, "auto", vectors)
         retro = await self._retro_assign(version)
@@ -414,6 +442,7 @@ class ComplaintService:
                     },
                 )
                 for m in members
+                # 그사이 검토 등으로 이미 배정·확정된 민원은 덮어쓰지 않는다
                 if m.assign_status == "unassigned"
             ]
         )
@@ -430,6 +459,7 @@ class ComplaintService:
         """
         if status not in (None, "pending", "done"):
             raise AppError("INVALID_STATUS", "status는 pending 또는 done입니다.", 422)
+        # 위에서 검사한 문자열을 저장소가 받는 Literal 값으로 좁혀 넘긴다(None이면 전체)
         found, total = await self._reviews.list_page(
             "pending" if status == "pending" else "done" if status == "done" else None,
             skip,
@@ -454,7 +484,10 @@ class ComplaintService:
             raise AppError("REVIEW_NOT_FOUND", "검토를 찾을 수 없습니다.", 404)
         if review.status != "pending":
             raise AppError("REVIEW_DONE", "이미 끝난 검토입니다.", 409)
+        # 검토가 끝나면 어떤 경우든 검토 대기 표시는 내린다
         fields: dict[str, object] = {"needsReview": False}
+        # 사람이 고른 카테고리는 현재 체계의 활성 카테고리여야 하고, 자동 배정(auto)과 구분해
+        # confirmed로 남긴다(PRD 8.1 배정 상태의 "사람 확정")
         if request.category_id is not None:
             latest = await self._categories.latest_version()
             category = (
@@ -473,9 +506,11 @@ class ComplaintService:
                 }
             )
         now = utc_now()
+        # 검토 완료를 먼저 기록하고(pending일 때만 성공), 성공한 쪽만 민원을 고쳐 동시 저장을 막는다
         if not await self._reviews.complete(oid, request.category_id, request.reviewed_by, now):
             raise AppError("REVIEW_DONE", "이미 끝난 검토입니다.", 409)
         await self._complaints.update_fields([(review.complaint_id, fields)])
+        # 저장된 완료 시각·검토자를 담아 돌려주려고 다시 읽는다
         updated = await self._reviews.get(oid)
         assert updated is not None
         return updated

@@ -29,6 +29,7 @@ from app.schemas.mongo import utc_now
 from app.services.masking import find_pii
 from app.services.storage import LocalStorage
 
+# generate()가 받은 응답 모델 타입 그대로 돌려주게 하는 타입 변수
 M = TypeVar("M", bound=BaseModel)
 
 # fast: 대량·정형 작업(민원 속성 추출, 애매 배정, 정제 추천 검토)
@@ -68,6 +69,7 @@ def llm_configured(settings: Settings, tier: ModelTier) -> bool:
         settings: 앱 설정
         tier: fast 또는 deep
     """
+    # 판단 기준을 생성자 한 곳에만 두려고 실제로 만들어 본다(네트워크 호출은 하지 않는다)
     try:
         AzureChatBackend(settings, tier)
     except AppError:
@@ -95,8 +97,10 @@ class AzureChatBackend:
             if tier == "fast"
             else settings.azure_openai_deployment_deep
         )
+        # Foundry 새 엔드포인트(.../openai/v1)는 OpenAI 호환이라 API 버전이 필요 없다
         is_v1 = endpoint.rstrip("/").endswith("/openai/v1")
         api_version = settings.azure_openai_api_version
+        # 하나라도 빠지면 첫 호출에서야 실패하므로, 만들 때 바로 503으로 알린다
         if not (endpoint and api_key and deployment and (is_v1 or api_version)):
             raise AppError(
                 "LLM_NOT_CONFIGURED",
@@ -105,7 +109,10 @@ class AzureChatBackend:
             )
         self.deployment = deployment
         self._client: AsyncOpenAI
+        # 두 경우 모두 일시 오류(429·5xx·연결 끊김)는 SDK가 2번까지 다시 시도한다.
+        # 더 늘리면 작업 하나가 오래 묶이고, 실패는 작업 오류로 남겨 재처리하는 편이 낫다
         if is_v1:
+            # SDK가 뒤에 경로를 이어 붙이므로 끝을 /로 맞춘다(사용자가 /를 붙였든 아니든 같게)
             self._client = AsyncOpenAI(
                 base_url=endpoint.rstrip("/") + "/",
                 api_key=api_key.get_secret_value(),
@@ -129,6 +136,7 @@ class AzureChatBackend:
             user: 사용자 메시지(마스킹본)
             response_model: 응답 JSON 스키마가 될 모델
         """
+        # parse()는 response_model의 JSON 스키마를 구조화 출력으로 강제한다(자유 형식 응답 방지)
         try:
             completion = await self._client.chat.completions.parse(
                 model=self.deployment,
@@ -138,22 +146,28 @@ class AzureChatBackend:
                 ],
                 response_format=response_model,
             )
+        # 예외는 구체적인 것부터 잡는다. 토큰 한도로 잘렸거나 콘텐츠 필터에 막히면 JSON이
+        # 불완전하므로 형식 오류와 같은 코드로 본다. 상위 계층은 원인을 AppError 코드로만 구분한다
         except (openai.LengthFinishReasonError, openai.ContentFilterFinishReasonError) as exc:
             raise AppError(
                 "LLM_INVALID_RESPONSE", f"LLM 응답이 완성되지 않았습니다: {type(exc).__name__}", 502
             ) from exc
+        # 작업 오류에는 HTTP 상태 코드만 남긴다(오류 본문은 서비스 내부 문구라 화면에 맞지 않다)
         except openai.APIStatusError as exc:
             raise AppError(
                 "LLM_ERROR", f"LLM 호출에 실패했습니다(HTTP {exc.status_code}).", 502
             ) from exc
+        # 시간 초과·연결 실패 등 상태 코드가 없는 오류
         except openai.APIError as exc:
             raise AppError(
                 "LLM_ERROR", f"LLM 호출에 실패했습니다: {type(exc).__name__}", 502
             ) from exc
 
         message = completion.choices[0].message
+        # 구조화 출력에서 모델이 거절하면 content 대신 refusal이 온다
         if message.refusal:
             raise AppError("LLM_REFUSED", "LLM이 응답을 거절했습니다.", 502)
+        # 검증은 LlmClient가 캐시와 같은 경로로 하도록 여기서는 원문 문자열만 넘긴다
         usage = completion.usage
         return ChatReply(
             content=message.content or "",
@@ -193,6 +207,7 @@ class LlmUsage:
         self.calls += 1
         self.prompt_tokens += reply.prompt_tokens
         self.completion_tokens += reply.completion_tokens
+        # 외부 전송 시각을 남겨 "언제 무엇이 밖으로 나갔는지" 감사할 수 있게 한다(PRD 6.1)
         self.first_sent_at = self.first_sent_at or now
         self.last_sent_at = now
 
@@ -208,6 +223,7 @@ class LlmUsage:
             "failures": self.failures,
             "promptTokens": self.prompt_tokens,
             "completionTokens": self.completion_tokens,
+            # set은 JSON에 없어 목록으로 바꾸고, 저장할 때마다 순서가 같도록 정렬한다
             "promptVersions": list[JsonValue](sorted(self.prompt_versions)),
             "firstSentAt": self.first_sent_at.isoformat() if self.first_sent_at else None,
             "lastSentAt": self.last_sent_at.isoformat() if self.last_sent_at else None,
@@ -239,6 +255,8 @@ class LlmClient:
             masked_input: 사용자 메시지(마스킹본)
             model: 응답 모델
         """
+        # 응답에 영향을 주는 것을 모두 키에 넣는다. 배포(모델)나 응답 스키마만 바뀌어도
+        # 다른 응답이 나와야 하므로 옛 캐시를 쓰지 않게 한다. sort_keys로 키 순서 차이를 없앤다
         payload = json.dumps(
             [
                 self._backend.deployment,
@@ -250,7 +268,11 @@ class LlmClient:
             ensure_ascii=False,
             sort_keys=True,
         )
+        # 입력 원문 대신 해시를 파일명으로 써서 경로 길이를 고정하고
+        # 내용이 이름에 드러나지 않게 한다
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        # 프롬프트 버전별 폴더로 나눠 옛 버전 캐시를 통째로 지우기 쉽게 한다.
+        # 버전 문자열은 폴더 이름이 되므로 경로 문자(/, ..)를 막는다
         safe_version = "".join(c if c.isalnum() or c in "-_.@" else "_" for c in prompt_version)
         return f"llm-cache/{safe_version}/{digest}.json"
 
@@ -270,6 +292,8 @@ class LlmClient:
             masked_input: 사용자 메시지. mask_text를 거친 마스킹본이어야 한다
             response_model: 응답을 검증할 app/schemas 모델
         """
+        # 2차 검사: 호출한 쪽이 mask_text를 빠뜨렸거나 마스킹 규칙이 놓친 값이 있으면
+        # 외부로 나가기 전에 여기서 막는다. 캐시 조회보다 먼저 해서 캐시 경로로도 새지 않게 한다
         remaining = find_pii(masked_input)
         if remaining:
             raise AppError(
@@ -280,10 +304,14 @@ class LlmClient:
         self.usage.prompt_versions.add(prompt_version)
         key = self._cache_key(prompt_version, system, masked_input, response_model)
 
+        # 캐시: GPT-5 계열은 temperature를 고정할 수 없어 같은 입력에도 답이 달라질 수 있다.
+        # 같은 요청이면 저장해 둔 응답을 그대로 써서 재처리 결과를 재현하고 비용도 아낀다
         if self._cache is not None:
+            # 파일 읽기는 막히는 작업이라 스레드로 넘겨 이벤트 루프를 붙잡지 않는다
             try:
                 cached = await asyncio.to_thread(self._cache.read_text, key)
             except AppError:
+                # 캐시가 없거나 읽지 못하면 그냥 호출한다(캐시는 최적화일 뿐)
                 cached = None
             if cached is not None:
                 try:
@@ -294,11 +322,13 @@ class LlmClient:
                     self.usage.cache_hits += 1
                     return result
 
+        # 실패도 사용 내역에 남긴 뒤 그대로 올려 호출한 쪽이 작업·행 오류로 기록하게 한다
         try:
             reply = await self._backend.complete(system, masked_input, response_model)
         except AppError:
             self.usage.failures += 1
             raise
+        # 형식이 틀린 응답도 토큰은 썼으므로 검증 전에 전송 기록부터 남긴다
         self.usage.record_sent(reply)
         try:
             result = response_model.model_validate_json(reply.content)
@@ -308,6 +338,7 @@ class LlmClient:
                 "LLM_INVALID_RESPONSE", "LLM 응답이 요구한 형식과 다릅니다.", 502
             ) from exc
 
+        # 검증을 통과한 응답만 캐시한다(틀린 응답이 굳어 재시도해도 계속 실패하지 않게)
         if self._cache is not None:
             await asyncio.to_thread(self._cache.write_text, key, reply.content)
         return result
@@ -320,4 +351,6 @@ def create_llm_client(settings: Settings, tier: ModelTier) -> LlmClient:
         settings: 앱 설정(AZURE_OPENAI_*, storage_root)
         tier: fast(대량·정형 작업, 예: luna) 또는 deep(깊은 추론, 예: sol)
     """
+    # 캐시는 마스킹본에 대한 응답이라 원본 저장소에 둬도 개인정보가 새로 생기지 않는다.
+    # API·워커가 같은 저장소를 보므로 어느 프로세스가 호출해도 캐시를 함께 쓴다
     return LlmClient(AzureChatBackend(settings, tier), LocalStorage(settings.storage_root))

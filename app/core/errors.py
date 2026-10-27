@@ -9,6 +9,7 @@ class AppError(Exception):
             message: 사용자에게 보여줄 한국어 메시지
             status_code: 응답 HTTP 상태 코드(기본 400)
         """
+        # str(exc)와 로그에도 메시지가 보이도록 부모에 넘긴다
         super().__init__(message)
         self.code = code
         self.message = message

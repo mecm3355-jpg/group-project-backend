@@ -34,15 +34,20 @@ def noun_tokens(text: str) -> list[str]:
         text: 마스킹된 본문
     """
     nouns: list[tuple[int, int, str]] = []  # (시작, 끝, 낱말)
+    # 마스킹 표지를 지우지 않으면 "전화"·"인명" 같은 표지 속 낱말이 핵심어로 뽑힌다.
+    # 빈 문자열이 아니라 공백으로 바꿔 앞뒤 명사가 붙어 버리지 않게 한다
     for token in kiwi().tokenize(MASK_TAG.sub(" ", text)):
         if token.tag not in NOUN_TAGS:
             continue
         start, end = token.start, token.start + token.len
+        # 앞 명사의 끝과 이번 명사의 시작이 맞닿아 있으면(띄어쓰기 없음) 복합 명사로 잇는다.
+        # 외국어(SL)는 앞 명사에 잇지 않고 따로 둔다(예: CCTV는 CCTV 그대로 핵심어가 된다)
         if nouns and nouns[-1][1] == start and token.tag != "SL":
             prev_start, _, prev_form = nouns[-1]
             nouns[-1] = (prev_start, end, prev_form + token.form)
         else:
             nouns.append((start, end, token.form))
+    # 한 글자 명사("곳", "것" 등)는 뜻이 약해 핵심어로 쓸모가 적으므로 뺀다
     return [form for _, _, form in nouns if len(form) >= 2 and form not in STOPWORDS]
 
 
@@ -58,10 +63,13 @@ def class_tfidf(
         top_n: 군집마다 고를 핵심어 수
         tokenizer: 본문 → 단어 목록(기본: Kiwi 명사)
     """
+    # 군집 하나를 문서 하나로 보고(class-based) 군집별 단어 빈도를 센다
     counts = [Counter(token for text in group for token in tokenizer(text)) for group in groups]
+    # 전체 빈도: 모든 군집에 걸친 단어별 등장 수. IDF 쪽 분모가 된다
     total: Counter[str] = Counter()
     for count in counts:
         total.update(count)
+    # 명사가 하나도 없으면(빈 본문·마스킹 표지뿐) 나눗셈을 하지 않고 빈 핵심어를 돌려준다
     if not total:
         return [[] for _ in groups]
     average_words = sum(total.values()) / len(groups)
@@ -69,10 +77,13 @@ def class_tfidf(
     keywords: list[list[str]] = []
     for count in counts:
         size = sum(count.values())
+        # TF는 군집 안 비율이라 군집 크기 차이를 지우고, IDF는 여러 군집에 두루 많이 나오는
+        # 단어일수록 total이 커져 log 값이 작아진다. 그래서 그 군집에만 많은 단어가 위로 온다
         scored = [
             (freq / size * math.log(1 + average_words / total[word]), word)
             for word, freq in count.items()
         ]
+        # 점수가 같으면 낱말 순으로 정렬해 실행할 때마다 같은 핵심어가 나오게 한다(재현성)
         scored.sort(key=lambda item: (-item[0], item[1]))
         keywords.append([word for _, word in scored[:top_n]])
     return keywords

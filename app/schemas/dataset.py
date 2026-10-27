@@ -11,6 +11,7 @@ from pydantic import Field
 from app.schemas.common import ApiModel
 from app.schemas.job import JobStatus
 
+# 공통 필드 이름. 민원 분석 요청(complaint_api)도 같은 FieldMapping을 쓴다
 CanonicalField = Literal[
     "source_id",
     "title",
@@ -27,6 +28,7 @@ CanonicalField = Literal[
 
 # 통합 CSV의 열 이름(순서대로). 앞의 두 열은 원문 위치(PRD 3장: 원본으로 되돌아갈 수 있게)
 SOURCE_COLUMNS = ("출처파일ID", "원본행")
+# 공통 필드 → 통합 CSV 열 이름(한국어). dict 순서가 곧 CSV 열 순서다
 FIELD_LABELS: dict[CanonicalField, str] = {
     "source_id": "원본ID",
     "title": "제목",
@@ -65,8 +67,10 @@ class FieldMapping(ApiModel):
         파라미터: 없음
         """
         result: dict[CanonicalField, str] = {}
+        # FIELD_LABELS 순서로 돌아 결과 dict도 CSV 열 순서와 같게 만든다
         for name in FIELD_LABELS:
             column = getattr(self, name)
+            # 빈 문자열도 '매핑 없음'으로 본다(화면에서 선택을 지우면 ""로 올 수 있음)
             if isinstance(column, str) and column:
                 result[name] = column
         return result
@@ -75,6 +79,7 @@ class FieldMapping(ApiModel):
 class FieldConstants(ApiModel):
     """파일 전체에 같은 값을 넣을 필드. 같은 필드에 열 매핑이 있으면 열 값이 우선이다."""
 
+    # 모든 행에 복사되는 값이라 길이를 제한해 통합 파일이 부풀지 않게 한다
     region: str | None = Field(default=None, max_length=100)
     agency: str | None = Field(default=None, max_length=100)
     source_category: str | None = Field(default=None, max_length=100)
@@ -94,6 +99,7 @@ class MergeRequest(ApiModel):
     """POST /api/v1/files/merge 요청 — 합칠 파일과 파일별 매핑(확인을 거친 것)."""
 
     name: str | None = Field(default=None, max_length=100, description="통합 파일 이름")
+    # 원본 하나만 넣어 공통 필드로 정리할 수도 있어 최소 1개. 상한 50은 작업 부담 제한
     sources: list[MergeSource] = Field(min_length=1, max_length=50)
 
 
@@ -142,7 +148,9 @@ class MappingSuggestion(ApiModel):
     """
 
     file_id: str
+    # ai: LLM 제안(원본 값 없이 열 요약만 보냄), rule: LLM 없음·실패 시 열 이름 규칙
     method: Literal["ai", "rule"]
+    # 원본 파일의 열 이름 전체. 화면에서 매핑을 고를 선택지로 쓴다
     columns: list[str]
     mapping: FieldMapping
     constants: FieldConstants

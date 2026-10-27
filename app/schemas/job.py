@@ -6,6 +6,7 @@ from pydantic import Field
 
 from app.schemas.mongo import MongoDocument, MongoModel, utc_now
 
+# schema.md processing_jobs.status 설명의 네 값 그대로
 JobStatus = Literal["queued", "processing", "completed", "failed"]
 
 # 데이터 추출·품질 진단 작업. 업로드할 때와 POST /files/{file_id}/process 때 만든다(PRD 7.2)
@@ -33,10 +34,13 @@ class JobDocument(MongoDocument):
     """
 
     field: ObjectId
+    # analyze·clean·report·merge·complaint_analysis 등. 처리기를 추가할 수 있도록 str로 둔다
     type: str
     status: JobStatus = "queued"
     progress: int = Field(default=0, ge=0, le=100)
+    # 세부 단계(validating·parsing·quality_check 등, schema.md 비고). 실패하면 그 단계가 남는다
     stage: str = "queued"
+    # 실패 원인 추적용(CLAUDE.md: processing_jobs는 실패 원인과 재처리 상태 추적)
     error: JobError | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None

@@ -122,6 +122,8 @@ def _from_table(path: Path, extension: str, request: ComplaintAnalysisRequest) -
         request: 열 매핑·고정값
     """
     mapping = request.mapping.mapped()
+    # 분석할 글이 없으면 임베딩·군집화를 할 수 없다. 본문 열이 없는 자료(예: 제목만 있는 단속
+    # 기록)는 제목을 본문 대신 쓴다
     body_column = mapping.get("content") or mapping.get("title")
     if body_column is None:
         raise AppError(
@@ -131,19 +133,31 @@ def _from_table(path: Path, extension: str, request: ComplaintAnalysisRequest) -
         )
     result = Extraction()
     with open_table(path, extension) as table:
+        # 매핑 오타는 행마다 None으로 조용히 넘어가면 원인을 찾기 어려우므로 처음에 거부한다
         missing = [c for c in mapping.values() if c not in table.columns]
         if missing:
             raise AppError("MAPPING_INVALID", f"파일에 없는 열입니다: {', '.join(missing)}", 422)
+        # 열 이름 → 칸 위치를 한 번만 계산해 행마다 찾지 않게 한다
         index = {name: table.columns.index(column) for name, column in mapping.items()}
+        # 본문 열이 없어 제목을 대신 읽었는지 민원마다 기록해 둔다(contentType)
         content_type: ContentType = "body" if "content" in mapping else "title"
+        # 1행은 머리글이라 데이터는 2행부터다. 원본 파일의 행 번호와 맞춰 근거를 찾아가게 한다
+        # (PRD 10장 추적성)
         for row_number, row in enumerate(table.rows, start=2):
             if not row:
                 continue
 
+            # row를 기본값으로 묶어 두어, 반복마다 그 행의 값을 읽게 한다(늦은 바인딩 방지)
             def cell(name: str, row: list[Cell] = row) -> Cell:
-                """매핑된 열의 값(매핑이 없으면 None)."""
+                """매핑된 열의 값(매핑이 없으면 None).
+
+                파라미터:
+                    name: 매핑 항목 이름(content, title, received_at, region 등)
+                    row: 읽을 행(기본값으로 현재 행이 묶인다)
+                """
                 return row[index[name]] if name in index else None
 
+            # 지역·기존 분류 열이 없거나 비어 있으면 요청의 고정값(예: 파일 전체가 한 지역)을 쓴다
             result.records.append(
                 RawComplaint(
                     text=_text(cell("content" if content_type == "body" else "title")),
@@ -178,6 +192,8 @@ def _from_document(
         ocr: OCR 설정
         rules: 분리 규칙 목록
     """
+    # 요청에 분리 규칙 이름이 있으면 설정 파일에 있는지 먼저 확인한다. 없는 이름으로 파일 전체를
+    # 한 건으로 처리해 버리면 결과가 크게 틀어지므로 오류로 알린다
     rule: FormRule | None = None
     if request.split_rule is not None:
         rule = rules.get(request.split_rule)
@@ -187,6 +203,8 @@ def _from_document(
             )
     result = Extraction()
     with open_document(path, extension, ocr) as document:
+        # 한 파일에 같은 서식의 민원이 반복되면(예: 국민신문고 PDF) 분리 규칙으로 한 건씩 나눈다.
+        # 페이지·OCR 신뢰도를 함께 남겨 사람 검수 때 원문 위치로 돌아갈 수 있게 한다
         if rule is not None:
             for form in split_by_form(document.entries, rule):
                 received = form.fields.get(rule.received_field) if rule.received_field else None
@@ -202,6 +220,8 @@ def _from_document(
                     )
                 )
         else:
+            # 규칙이 없으면 파일 하나를 민원 한 건으로 본다. OCR 신뢰도는 OCR한 조각만 평균 낸다
+            # (텍스트 레이어에서 읽은 조각은 신뢰도가 없다)
             entries = list(document.entries)
             confidences = [e.confidence for e in entries if e.confidence is not None]
             result.records.append(
@@ -221,6 +241,8 @@ def _from_document(
             "pageCount": document.page_count,
             "method": "ocr" if document.ocr_pages else "text",
         }
+        # OCR을 못 쓰는 환경에서 스캔 페이지는 빈 글로 빠진다. 조용히 넘기지 않고 높은 심각도로
+        # 알려 담당자가 OCR을 켜고 다시 처리하게 한다
         if document.pages_without_text:
             result.issues.append(
                 _issue(
@@ -246,12 +268,15 @@ def _from_text(path: Path, extension: str, request: ComplaintAnalysisRequest) ->
     with open_text(path, extension) as text:
         block: list[str] = []
         start = 1
+        # 끝에 빈 줄 하나를 덧붙여, 파일이 빈 줄 없이 끝나도 마지막 덩어리가 저장되게 한다
         for number, line in enumerate([*text.lines, ""], start=1):
             if line.strip():
+                # 덩어리의 첫 줄 번호를 원문 위치로 남긴다
                 if not block:
                     start = number
                 block.append(line.strip())
                 continue
+            # 빈 줄을 만나면 모아 둔 줄을 한 건으로 닫는다. 연속된 빈 줄은 건너뛴다
             if block:
                 result.records.append(
                     RawComplaint(
@@ -283,6 +308,7 @@ def _clean(result: Extraction) -> Extraction:
     파라미터:
         result: 형식별 추출 결과
     """
+    # 빈 본문은 임베딩·속성 근거가 없어 분석에서 뺀다(PRD 4장 1단계: 오류 리포트로 빼고 계속)
     empty = sum(1 for r in result.records if not r.text.strip())
     seen: Counter[tuple[str, datetime | None, str | None]] = Counter()
     kept: list[RawComplaint] = []
@@ -290,11 +316,15 @@ def _clean(result: Extraction) -> Extraction:
     for record in result.records:
         if not record.text.strip():
             continue
+        # 완전 중복: 공백만 다른 본문 + 같은 접수일 + 같은 지역. 본문만 같은 서로 다른 민원
+        # (다른 날 같은 내용 재신고 등)은 지우지 않도록 접수일·지역까지 키에 넣는다
         key = (" ".join(record.text.split()), record.received_at, record.region)
         seen[key] += 1
         if seen[key] > 1:
             duplicates += 1
             continue
+        # 위도·경도 중 하나라도 범위를 벗어나면 둘 다 버린다. 반쪽 좌표는 거리 계산에 못 쓰고,
+        # 흔한 원인은 위도·경도 열을 뒤바꿔 매핑한 경우다
         has_point = record.latitude is not None or record.longitude is not None
         if has_point and not (
             _in_range(record.latitude, LATITUDE_RANGE)
@@ -348,6 +378,7 @@ def extract_complaints(
         ocr: OCR 설정(스캔 PDF·이미지)
         rules: 분리 규칙 목록(config/split_rules.toml)
     """
+    # 형식별 추출기로 나눈 뒤, 공통 정리(_clean)는 한 곳에서 해 형식마다 기준이 달라지지 않게 한다
     if extension in TABULAR_EXTENSIONS:
         result = _from_table(path, extension, request)
     elif extension in DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS:

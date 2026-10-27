@@ -37,6 +37,7 @@ def check_rule_columns(path: Path, extension: str, rules: list[CleanRule]) -> No
         extension: 원본 확장자
         rules: 확인할 규칙
     """
+    # 머리글만 보고 rows는 읽지 않는다. 큰 파일도 API 요청 안에서 빠르게 검증할 수 있다
     with open_table(path, extension) as table:
         check_columns(table.columns, rules)
 
@@ -95,6 +96,7 @@ class CleaningService:
         """
         doc = await self._get_file(file_id)
         self._require_cleaning(doc)
+        # 추천은 원본을 다시 읽지 않고 저장된 최신 진단만 근거로 한다(빠르고, 화면의 진단과 일치)
         analysis = await self._results.get_latest(doc.id, "analysis")
         if analysis is None:
             raise AppError(
@@ -113,17 +115,22 @@ class CleaningService:
         """
         doc = await self._get_file(file_id)
         self._require_cleaning(doc)
+        # 한 파일에 작업이 겹치면 files.status·lastJobId가 엇갈리므로 하나씩만 받는다
         if await self._jobs.has_active(doc.id):
             raise AppError("JOB_ALREADY_RUNNING", "이미 처리 중인 작업이 있습니다.", 409)
+        # 요청 자체는 올바르지만 서버 상태(원본 없음)와 충돌하므로 422가 아닌 409
         source = self._storage.path(doc.storage.key)
         if not source.is_file():
             raise AppError("SOURCE_MISSING", "원본 파일이 저장소에 없습니다.", 409)
+        # 열 이름 오류는 작업을 만들기 전에 바로 422로 알린다(워커에서 실패하면 조회해야 안다)
         await asyncio.to_thread(check_rule_columns, source, doc.extension, request.rules)
 
+        # _id를 미리 만들어 둬야 DB에 넣기 전에 파라미터 파일 위치를 정할 수 있다
         job = JobDocument(field=doc.id, type=CLEAN_JOB_TYPE)
         await asyncio.to_thread(
             self._storage.write_text, job_params_key(job.id), request.model_dump_json()
         )
+        # 파일을 다 쓴 뒤에 등록한다. 순서가 반대면 워커가 먼저 가져가 파라미터를 못 읽는다
         await self._jobs.insert(job)
         await self._files.update_status(doc.id, "queued", last_job_id=job.id)
         return job
@@ -147,23 +154,29 @@ class CleaningService:
             version: 정제 결과 버전. None이면 최신
         """
         doc = await self._get_file(file_id)
+        # 이력은 최신 버전부터 오므로, 버전을 지정하지 않으면 첫 항목이 최신이다
         history = await self._results.list_by_file(doc.id, "cleaning")
         result = next((r for r in history if version is None or r.version == version), None)
         if result is None:
             raise AppError("RESULT_NOT_FOUND", "다운로드할 정제 결과가 없습니다.", 404)
 
+        # cleaning은 자유 형식 객체(JsonValue)라 타입을 하나씩 확인하며 산출물 위치를 꺼낸다
         artifacts = result.cleaning.get("artifacts")
         key = None
         if isinstance(artifacts, list) and artifacts and isinstance(artifacts[0], dict):
             storage_key = artifacts[0].get("storageKey")
             key = storage_key if isinstance(storage_key, str) else None
         source = self._storage.path(key) if key else None
+        # DB 기록은 있는데 파일이 없는 불일치 상태라 404가 아닌 409로 구분한다
         if source is None or not source.is_file():
             raise AppError("ARTIFACT_MISSING", "정제 결과 파일이 저장소에 없습니다.", 409)
 
+        # 원래 이름에 버전을 붙여, 여러 버전을 내려받아도 파일 이름이 겹치지 않게 한다
         filename = f"{Path(doc.original_name).stem}_cleaned_v{result.version}.{fmt}"
+        # 산출물이 이미 CSV라 변환 없이 그대로 보낸다(보낸 뒤 지우면 안 되는 원본 산출물)
         if fmt == "csv":
             return ExportFile(source, filename, MEDIA_TYPES[fmt], temporary=False)
+        # 다른 형식은 요청마다 임시 파일로 변환해 보내고 지운다(형식별 사본을 쌓아 두지 않는다)
         target = self._storage.new_temp_path()
         await asyncio.to_thread(convert, source, target, fmt)
         return ExportFile(target, filename, MEDIA_TYPES[fmt], temporary=True)

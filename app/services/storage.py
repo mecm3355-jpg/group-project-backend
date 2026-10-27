@@ -28,6 +28,8 @@ class LocalStorage:
         파라미터:
             key: 저장소 안의 상대 경로(예: uploads/2026/10/<fileId>)
         """
+        # resolve로 ".."·심볼릭 링크를 먼저 풀어야 "../../etc" 같은 key가
+        # 저장소 안처럼 보이지 않는다
         target = (self._root / key).resolve()
         if not target.is_relative_to(self._root):
             raise AppError("INVALID_STORAGE_KEY", "잘못된 저장 위치입니다.", 400)
@@ -38,8 +40,11 @@ class LocalStorage:
 
         파라미터: 없음
         """
+        # 임시 폴더를 저장소 안에 둔다. 같은 디스크라 put의 replace가 복사 없이 이름만 바꾸는
+        # 원자적 이동이 된다(다른 드라이브면 replace가 실패한다)
         temp_dir = self._root / "tmp"
         temp_dir.mkdir(parents=True, exist_ok=True)
+        # 동시에 여러 업로드가 와도 겹치지 않도록 무작위 이름을 쓴다
         return temp_dir / uuid.uuid4().hex
 
     def put(self, source: Path, key: str) -> None:
@@ -51,6 +56,8 @@ class LocalStorage:
         """
         target = self.path(key)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # replace는 Windows에서도 기존 파일을 덮어쓴다(rename은 실패). 읽는 쪽은 옮기기 전
+        # 또는 후의 온전한 파일만 보게 된다
         source.replace(target)
 
     def write_text(self, key: str, text: str) -> None:
@@ -71,6 +78,7 @@ class LocalStorage:
             key: 읽을 위치
         """
         target = self.path(key)
+        # FileNotFoundError 대신 AppError로 바꿔 작업 오류 코드로 남게 한다
         if not target.is_file():
             raise AppError("STORAGE_NOT_FOUND", "저장된 파일을 찾을 수 없습니다.", 404)
         return target.read_text(encoding="utf-8")
@@ -82,8 +90,10 @@ class LocalStorage:
             prefix: 지울 폴더 key(예: results/<fileId>)
         """
         target = self.path(prefix)
+        # 빈 문자열이나 "." 같은 prefix가 들어와도 저장소 전체가 날아가지 않게 막는다
         if target == self._root:
             raise AppError("INVALID_STORAGE_KEY", "저장소 전체는 지울 수 없습니다.", 400)
+        # 정리용이라 일부 파일이 잠겨 있어도(Windows) 본 작업·삭제 요청을 실패시키지 않는다
         shutil.rmtree(target, ignore_errors=True)
 
     def delete(self, key: str) -> bool:

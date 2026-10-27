@@ -19,9 +19,11 @@ class QualityReport(ApiModel):
 
     file_id: str
     job_id: str
+    # 어느 분석 버전의 진단인지. 재처리할 때마다 올라간다
     version: int
     score: int | None
     issues: list[QualityIssue]
+    # 표 형식만 채운다: 완전성·유일성·유효성·일관성(0~100)과 점수 계산 기준
     metrics: dict[str, float] | None
     score_basis: str | None
     created_at: datetime
@@ -41,5 +43,6 @@ class QualityReport(ApiModel):
             issues=doc.quality.issues,
             metrics=doc.quality.metrics,
             score_basis=doc.quality.score_basis,
+            # DB 표 기준 이름(createAt)을 응답 이름(createdAt)으로 바꾼다
             created_at=doc.create_at,
         )
