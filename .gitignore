@@ -1,10 +1,31 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# 환경 변수 (절대 커밋 금지)
+.env
+.env.*
 
-# Virtual environments
-.venv
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 도구 캐시
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 업로드 원본·산출물 (로컬 저장소)
+storage/
+storage-dev/
+
+# 에디터·OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# 샘플 데이터(실제 민원·실명 포함, 커밋 금지)와 분석 산출물
+샘플데이타/
+reports/

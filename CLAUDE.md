@@ -6,6 +6,19 @@
 Python + FastAPI(Modular Monolith) + MongoDB Atlas
 
 ## 명령어
+가상환경은 Google Drive 동기화를 피하려고 프로젝트 밖에 둔다(예: `~/.venvs/datalens`).
+- 설치: `py -3.14 -m venv ~/.venvs/datalens` → `~/.venvs/datalens/Scripts/python -m pip install -e ".[dev]"` (민원 분석 임베딩까지: `".[dev,analysis]"`, torch·bge-m3 약 2.3GB)
+- OCR(스캔 PDF·이미지): `winget install UB-Mannheim.TesseractOCR` + 한국어 모델 `kor.traineddata`(tessdata_best)를 받은 폴더를 `.env`의 `TESSERACT_TESSDATA_DIR`에 지정. 없으면 스캔 PDF는 "OCR 필요"로만 진단, 테스트는 OCR을 끄고 돈다
+- OCR 정확도 측정: `python scripts/ocr_eval.py [--languages kor+eng]` — 국민신문고 PDF를 교정본 CSV와 대조해 `reports/m3/`에 기록
+- 품질 측정(개선 전후 비교): `python scripts/quality_bench.py --label "설명" [--labels 채운라벨링.csv]` — OCR·속성·시뮬레이션 지표를 `reports/quality/latest.md`에 직전 실행과 비교(외부 호출 없음)
+- M3 첫 분석(실데이터 → 후보 목록): `python scripts/m3_first_run.py [--attribute-method rule]` — 임시 MongoDB로 포항 CSV·국민신문고 PDF를 API·워커 그대로 분석해 `reports/m3/first-run.md` 작성
+- M2 시뮬레이션: `python scripts/m2_simulation.py [--sweep] [--llm]` — `샘플데이타/`를 읽어 `reports/m2/`에 리포트 작성(둘 다 git 제외, `--llm`은 마스킹본을 Azure로 전송)
+- 실행(API): `uvicorn app.main:create_app --factory --reload`
+- 실행(워커): `python -m app.worker` (API와 별도 프로세스)
+- 실행(DB 없이 로컬): `python scripts/dev_server.py` — 임시 MongoDB + API + 워커, 종료하면 데이터 삭제
+- lint: `ruff check . && ruff format --check .`
+- typecheck: `mypy app tests`
+- test: `pytest` (DB 통합 테스트는 임시 MongoDB를 자동으로 띄움 — `MONGODB_TEST_URI`로 다른 DB 지정, `=skip`이면 건너뜀. 실제 LLM 호출 테스트는 `RUN_LLM_TESTS=1`일 때만)
 
 
 ## 구조
@@ -41,3 +54,17 @@ Python + FastAPI(Modular Monolith) + MongoDB Atlas
 ## 주의
 - DB 연결 문자열과 AI API 키는 .env에 보관
 - 환경변수는 `.env.example` 참고, `.env, .env.example, .env.local` 등 관련 `.env` 파일들은 절대 커밋하지 않음
+
+## 기준 문서 (충돌 시 위에서부터 우선)
+1. DB: `docs/db-schema/schema.md` (원본 `docs/db-schema/*.xlsx`) — 필드명·타입·필수·설명을 그대로 따른다. 필드 추가·이름 변경 금지
+2. API: `docs/api-spec/api-spec.md` (원본 `docs/api-spec/api_명세서.hwpx`) — 경로·기능·응답 예시를 그대로 따른다
+3. 기능·설계: `docs/prd/PRD.md` — 7장(시스템 구조), 7.7(설계 파일 확인 사항), 12장(미결정 사항)을 먼저 확인
+4. 화면 디자인: `docs/DESIGN.md`
+
+- 기준에 없는 필드·컬렉션·API가 필요하면 만들지 말고 먼저 물어볼 것
+- PRD에서 "제안", "명세서 외 추가 제안", 7.7·12장 항목은 확정 전이므로 구현 전에 확인할 것
+- 원본(xlsx, hwpx)이 바뀌면 `.md` 변환본도 같이 갱신할 것
+- `docs/downloadfile.pdf`(외부 API 15선 수집 가이드)는 기준 문서가 아님. 참고용으로만 보고, 내용(외부 API 수집, raw/clean 컬렉션 등)을 구현에 반영하지 않음
+
+@docs/db-schema/schema.md
+@docs/api-spec/api-spec.md

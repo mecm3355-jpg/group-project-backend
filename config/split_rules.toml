@@ -1,0 +1,35 @@
+# 문서형 파일의 민원 분리 규칙(PRD 7.6 "시작 표지 + 필드 표지"). 소스마다 하나씩 둔다.
+# 읽는 곳: app/processors/splitter.py. 규칙을 누가 확정·관리할지는 PRD 12장 미결정
+#
+# start_label: 이 표지로 시작하는 줄에서 민원 한 건이 시작된다
+# fields: 필드 이름 = 줄 앞 표지(띄어쓰기는 무시하고 비교한다)
+# continuation_fields: 표지 없는 다음 줄을 이어 붙일 필드(여러 줄로 나뉜 제목 등)
+# content_field: 민원 내용으로 쓸 필드(complaints.contentMasked), content_type: body 또는 title
+# ignore_patterns: 이 정규식에 맞는 줄은 버린다(페이지 머리말·바닥글·쪽번호)
+# received_field: 접수일로 쓸 필드(선택)
+
+[sinmungo]
+start_label = "번호"
+content_field = "title"
+content_type = "title"
+received_field = "registered"
+continuation_fields = ["title"]
+# 인쇄 머리말("26. 10. 24. 오후 10:00 국민신문고 | ..."), 바닥글 URL·쪽번호("... 2/11")
+ignore_patterns = [
+    '국민신문고\s*\|',
+    '://',
+    '\d+\s*/\s*\d+\s*$',
+    '^\d+\.\s*\d+\.\s*\d+\.\s*(오전|오후)',
+]
+
+[sinmungo.fields]
+number = "번호"
+title = "제목"
+agency = "처리기관"
+registered = "등록일"
+views = "조회수"
+
+[sinmungo.field_types]
+number = "digits"
+registered = "date"
+views = "digits"
