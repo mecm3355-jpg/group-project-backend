@@ -1,37 +1,15 @@
-# Group Project Backend
+# DataLens (가칭) — 민원 자동분류·분석
 
-그룹 프로젝트의 백엔드 애플리케이션입니다. Python 패키지와 의존성은
-[uv](https://docs.astral.sh/uv/)로 관리합니다.
+| 경로 | 내용 | 비고 |
+| --- | --- | --- |
+| CLAUDE.md | AI 코딩 도구 작업 지침 + 기준 문서 위치 | 원본: 민원정보_프로젝트/CLAUDE.md에 "기준 문서" 섹션 추가 |
+| docs/prd/PRD.md | PRD v2 Markdown 변환본 | 그림 2개는 Word 파일 참고 |
+| docs/prd/민원_자동분류_PRD_v2.docx | PRD v2 Word 사본 | 원본은 claude.ai 문서 |
+| docs/db-schema/*.xlsx | DB 스키마 설계 원본 3개 (기준) | |
+| docs/db-schema/schema.md | 위 3개의 Markdown 변환본 | 원본과 동일 내용 |
+| docs/api-spec/api_명세서.hwpx | API 명세서 원본 (기준) | |
+| docs/api-spec/api-spec.md | 위 명세서의 Markdown 변환본 | 원본과 동일 내용 |
+| docs/DESIGN.md | 화면 디자인 참고 | |
 
-## 요구사항
-
-- Python 3.13 이상
-- uv
-
-## 시작하기
-
-저장소를 복제한 후 프로젝트 디렉터리에서 의존성을 설치합니다.
-
-```bash
-uv sync
-```
-
-이 명령은 `uv.lock`에 기록된 버전을 기준으로 의존성을 설치하고 로컬
-가상환경인 `.venv`를 생성합니다.
-
-애플리케이션을 실행합니다.
-
-```bash
-uv run group-project-backend
-```
-
-## 프로젝트 구조
-
-```text
-.
-├── src/group_project_backend/  # 애플리케이션 소스 코드
-├── pyproject.toml              # 프로젝트 및 의존성 설정
-└── uv.lock                     # 잠긴 의존성 버전
-```
-
-`.venv`는 `uv sync` 실행 시 로컬에 생성되며 Git에는 포함하지 않습니다.
+샘플 데이터는 `G:\내 드라이브\다운로드\민원정보_프로젝트`에 있다. 프로젝트 안 `샘플데이타/`에 사본을 두면
+`scripts/m2_simulation.py`가 읽는다(실제 민원이 들어 있어 git에서 제외).

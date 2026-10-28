@@ -1,0 +1,56 @@
+# 민원 분석 기준값(PRD 4장·5.3·8.2). M2 시뮬레이션(2026-10-26, scripts/m2_simulation.py --sweep)으로 확정.
+# 운영 메모: 첫 체계(v1)는 5개월 치(가상민원 약 400건)를 모아 만든다. 한 달 치로는 발견 순도가 0.4 안팎
+# 읽는 곳: app/core/analysis_config.py (값을 빼면 그 코드의 기본값을 쓴다)
+
+[assignment]
+# 카테고리 중심과의 코사인 유사도가 이 값 이상이면 배정
+threshold = 0.80
+# 1위와 2위 유사도 차이가 이 값 미만이면 애매(검토 대기)
+ambiguity_margin = 0.02
+
+[discovery]
+# 이 건수 이상 묶인 군집은 신규 카테고리 후보
+candidate_min_size = 5
+# HDBSCAN 최소 군집 크기. candidate_min_size보다 작은 군집은 2개월 연속 등장할 때만 후보
+cluster_min_size = 3
+# [M2 제안, PRD 5.3 외] 응집도(소속 민원과 중심의 평균 코사인)가 이 값 미만인 군집은 후보 보류. 0이면 끔
+# M2 가상민원으로 0.88을 정했으나(템플릿 문장 탓에 응집도 중앙값 0.90), 실제 민원은 중앙값이
+# 0.79~0.82(포항·국민신문고)라 후보가 거의 다 빠져 M3에서 끔. 실제 평가셋 라벨이 생기면 다시 정한다
+min_cohesion = 0.0
+# UMAP 차원 축소(이 건수 미만이면 축소 없이 바로 군집화)
+umap_min_records = 15
+umap_neighbors = 15
+umap_components = 5
+random_state = 42
+# 핵심어·대표 민원 수(categories.keywords 최대 10개, exemplarIds 5건)
+keyword_count = 10
+exemplar_count = 5
+
+[attributes]
+# 규칙에 걸리는 낱말이 없을 때, 원형 문장(app/services/attributes.py PROTOTYPES)과의 bge-m3 유사도로
+# 긴급도·요청 유형을 채운다. 유사도 이 값 이상 + 1·2위 차이 margin 이상일 때만(근거 약하면 비움)
+# 측정(2026-10-26, 포항 LLM 일치율): 긴급도 0.32→0.49, 요청 유형 0.41→0.50
+prototype_min_similarity = 0.45
+prototype_margin = 0.01
+
+[spike]
+# 이번 달 건수가 직전 baseline_months개월 평균의 ratio배 이상이고 min_count건 이상이면 급증
+# (PRD 초기값 2.0으로는 김천 10월 급증(1.57배)을 놓쳐 1.5로 낮춤)
+ratio = 1.5
+baseline_months = 3
+min_count = 5
+# 전년 같은 달이 있으면 그 달의 yoy_ratio배 이상일 때만 급증으로 본다(계절 정점 오탐 제거)
+yoy_ratio = 1.5
+# 자료의 처음·마지막 달이 그 달 일수의 이 비율 미만만 덮으면 일부 월로 보고 판정·기준선에서 뺀다
+min_month_coverage = 0.9
+
+[issue]
+# 이슈 묶기(PRD 4장 7단계): 좌표 거리, 본문 유사도
+radius_meters = 100
+text_similarity = 0.8
+# 반복 이슈(8.2): 같은 이슈 이 건수 이상
+repeat_min_count = 3
+
+[taxonomy]
+# 분기 정리(5.3): 중심끼리 유사도 이 값 이상이면 병합 후보
+merge_similarity = 0.85
